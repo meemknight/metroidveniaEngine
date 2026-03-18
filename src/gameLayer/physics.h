@@ -64,13 +64,13 @@ struct PhysicalEntity
 		lastPosition = pos;
 	}
 
-	void updateForces(float deltaTime, float drag = 0.01f)
+	void updateForces(float deltaTime, glm::vec2 drag = {0.01f, 0.f})
 	{
 		velocity += acceleration * deltaTime;
 		transform.pos += velocity * deltaTime;
-		velocity -= glm::vec2{
-			velocity.x * std::abs(velocity.x),
-			velocity.y * std::abs(velocity.y)} * drag * deltaTime;
+		velocity += glm::vec2{
+			velocity.x * (-drag.x * deltaTime),
+			velocity.y * (-drag.y * deltaTime)};
 
 		if (glm::length(velocity) < 0.01f)
 		{

@@ -4,6 +4,7 @@
 #include "room.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <glm/glm.hpp>
@@ -21,12 +22,15 @@ namespace
 
 	struct DebugTuning
 	{
-		float playerMoveSpeed = 14.f;
-		float jumpForce = 20.f;
-		float gravity = 20.f;
-		float drag = 0.01f;
+		float moveSpeed = 25.f;
+		float jumpHeight = 11.f;
+		float minJumpHeight = 3.f;
+		float jumpApexTime = 0.42f;
+		float fallGravity = 140.f;
+		float maxFallSpeed = 38.f;
+		float coyoteTime = 0.08f;
+		float jumpBufferTime = 0.10f;
 		float cameraZoom = 32.f;
-		float cameraFollowStrength = 10.f;
 		bool showGrid = true;
 		float gridAlpha = 0.20f;
 		float gridLineWidth = 0.05f;
@@ -54,11 +58,11 @@ namespace
 
 	void respawnPlayer()
 	{
-		gPlayer.physics = {};
+		gPlayer = {};
 		gPlayer.physics.transform.w = kPlayerWidth;
 		gPlayer.physics.transform.h = kPlayerHeight;
 		gPlayer.physics.teleport(gSpawnPoint);
-		gPlayer.moveSpeed = gTuning.playerMoveSpeed;
+		gPlayer.moveSpeed = gTuning.moveSpeed;
 
 		gCamera = {};
 		gCamera.zoom = gTuning.cameraZoom;
@@ -84,26 +88,59 @@ namespace
 		respawnPlayer();
 	}
 
-	void updatePlayer(float deltaTime, float moveInput, bool jumpHeld)
+	void updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpHeld)
 	{
-		gPlayer.moveSpeed = gTuning.playerMoveSpeed;
+		gPlayer.moveSpeed = gTuning.moveSpeed;
+		bool grounded = gPlayer.physics.downTouch;
 
-		if (moveInput < 0.f)
+		if (grounded)
 		{
-			gPlayer.physics.transform.pos.x -= gPlayer.moveSpeed * deltaTime;
+			gPlayer.physics.transform.pos.x += moveInput * gPlayer.moveSpeed * deltaTime;
+			gPlayer.coyoteTimer = gTuning.coyoteTime;
 		}
-		else if (moveInput > 0.f)
+		else
 		{
-			gPlayer.physics.transform.pos.x += gPlayer.moveSpeed * deltaTime;
-		}
-
-		if (jumpHeld)
-		{
-			gPlayer.physics.jump(gTuning.jumpForce);
+			gPlayer.physics.transform.pos.x += moveInput * gPlayer.moveSpeed * deltaTime;
+			gPlayer.coyoteTimer -= deltaTime;
+			gPlayer.coyoteTimer = std::max(gPlayer.coyoteTimer, 0.f);
 		}
 
-		gPlayer.physics.applyGravity(gTuning.gravity);
-		gPlayer.physics.updateForces(deltaTime, gTuning.drag);
+		if (jumpPressed)
+		{
+			gPlayer.jumpBufferTimer = gTuning.jumpBufferTime;
+		}
+		else
+		{
+			gPlayer.jumpBufferTimer -= deltaTime;
+			gPlayer.jumpBufferTimer = std::max(gPlayer.jumpBufferTimer, 0.f);
+		}
+
+		float jumpApexTime = std::max(gTuning.jumpApexTime, 0.01f);
+		float maxJumpHeight = std::max(gTuning.jumpHeight, 0.f);
+		float minJumpHeight = std::clamp(gTuning.minJumpHeight, 0.f, maxJumpHeight);
+		float riseGravity = (2.f * maxJumpHeight) / (jumpApexTime * jumpApexTime);
+		float jumpSpeed = riseGravity * jumpApexTime;
+		float minJumpSpeed = std::sqrt(2.f * riseGravity * minJumpHeight);
+
+		if (gPlayer.jumpBufferTimer > 0.f && gPlayer.coyoteTimer > 0.f)
+		{
+			gPlayer.physics.velocity.y = -jumpSpeed;
+			gPlayer.physics.downTouch = false;
+			gPlayer.coyoteTimer = 0.f;
+			gPlayer.jumpBufferTimer = 0.f;
+		}
+
+		if (!jumpHeld && gPlayer.physics.velocity.y < -minJumpSpeed)
+		{
+			gPlayer.physics.velocity.y = -minJumpSpeed;
+		}
+
+		float gravity = gPlayer.physics.velocity.y < 0.f ? riseGravity : gTuning.fallGravity;
+		gPlayer.physics.velocity.y += gravity * deltaTime;
+		gPlayer.physics.velocity.y = std::min(gPlayer.physics.velocity.y, gTuning.maxFallSpeed);
+
+		gPlayer.physics.velocity.x = 0.f;
+		gPlayer.physics.updateForces(deltaTime, {0.f, 0.f});
 		gPlayer.physics.resolveConstrains(gRoom);
 		gPlayer.physics.updateFinal();
 	}
@@ -204,15 +241,27 @@ namespace
 
 			ImGui::Separator();
 			ImGui::TextUnformatted("Player");
-			ImGui::SliderFloat("Move Speed", &gTuning.playerMoveSpeed, 0.5f, 20.f, "%.2f");
-			ImGui::SliderFloat("Jump Force", &gTuning.jumpForce, 0.5f, 20.f, "%.2f");
-			ImGui::SliderFloat("Gravity", &gTuning.gravity, 0.f, 60.f, "%.2f");
-			ImGui::SliderFloat("Drag", &gTuning.drag, 0.f, 0.15f, "%.4f");
+			ImGui::SliderFloat("Move Speed", &gTuning.moveSpeed, 0.5f, 30.f, "%.2f");
+			ImGui::SliderFloat("Jump Height", &gTuning.jumpHeight, 0.5f, 20.f, "%.2f");
+			ImGui::SliderFloat("Min Jump Height", &gTuning.minJumpHeight, 0.f, std::max(gTuning.jumpHeight, 0.5f), "%.2f");
+			ImGui::SliderFloat("Jump Apex Time", &gTuning.jumpApexTime, 0.05f, 1.20f, "%.2f");
+			ImGui::SliderFloat("Fall Gravity", &gTuning.fallGravity, 1.f, 250.f, "%.2f");
+			ImGui::SliderFloat("Max Fall Speed", &gTuning.maxFallSpeed, 1.f, 80.f, "%.2f");
+			ImGui::SliderFloat("Coyote Time", &gTuning.coyoteTime, 0.f, 0.30f, "%.2f");
+			ImGui::SliderFloat("Jump Buffer", &gTuning.jumpBufferTime, 0.f, 0.30f, "%.2f");
+			float jumpApexTime = std::max(gTuning.jumpApexTime, 0.01f);
+			float maxJumpHeight = std::max(gTuning.jumpHeight, 0.f);
+			float minJumpHeight = std::clamp(gTuning.minJumpHeight, 0.f, maxJumpHeight);
+			float riseGravity = (2.f * maxJumpHeight) / (jumpApexTime * jumpApexTime);
+			float jumpSpeed = riseGravity * jumpApexTime;
+			float minJumpSpeed = std::sqrt(2.f * riseGravity * minJumpHeight);
+			ImGui::Text("Derived Jump Speed: %.2f", jumpSpeed);
+			ImGui::Text("Derived Rise Gravity: %.2f", riseGravity);
+			ImGui::Text("Derived Min Cut Speed: %.2f", minJumpSpeed);
 
 			ImGui::Separator();
 			ImGui::TextUnformatted("Camera");
 			ImGui::SliderFloat("Zoom", &gTuning.cameraZoom, 4.f, 96.f, "%.1f");
-			ImGui::SliderFloat("Follow Strength", &gTuning.cameraFollowStrength, 0.f, 30.f, "%.2f");
 
 			ImGui::Separator();
 			ImGui::TextUnformatted("World");
@@ -226,6 +275,7 @@ namespace
 			ImGui::Separator();
 			ImGui::Text("Pos: %.2f, %.2f", gPlayer.physics.transform.pos.x, gPlayer.physics.transform.pos.y);
 			ImGui::Text("Vel: %.2f, %.2f", gPlayer.physics.velocity.x, gPlayer.physics.velocity.y);
+			ImGui::Text("Timers: coyote %.2f  buffer %.2f", gPlayer.coyoteTimer, gPlayer.jumpBufferTimer);
 			ImGui::Text("Touch: D%d U%d L%d R%d",
 				gPlayer.physics.downTouch ? 1 : 0,
 				gPlayer.physics.upTouch ? 1 : 0,
@@ -324,6 +374,10 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 
 	bool moveLeft = input.isButtonHeld(platform::Button::A) || input.isButtonHeld(platform::Button::Left);
 	bool moveRight = input.isButtonHeld(platform::Button::D) || input.isButtonHeld(platform::Button::Right);
+	bool jumpPressed =
+		input.isButtonPressed(platform::Button::Space) ||
+		input.isButtonPressed(platform::Button::W) ||
+		input.isButtonPressed(platform::Button::Up);
 	bool jumpHeld =
 		input.isButtonHeld(platform::Button::Space) ||
 		input.isButtonHeld(platform::Button::W) ||
@@ -333,7 +387,7 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	if (moveLeft) { moveInput -= 1.f; }
 	if (moveRight) { moveInput += 1.f; }
 
-	updatePlayer(deltaTime, moveInput, jumpHeld);
+	updatePlayer(deltaTime, moveInput, jumpPressed, jumpHeld);
 	updateCamera(w, h, deltaTime);
 	renderer.setCamera(gCamera);
 
