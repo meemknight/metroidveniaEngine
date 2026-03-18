@@ -1,9 +1,9 @@
 #include "gameLayer.h"
+#include "imguiTools.h"
 #include "player.h"
 #include "room.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <glm/glm.hpp>
@@ -16,52 +16,27 @@ gl2d::Renderer2D renderer;
 
 namespace
 {
-	constexpr float kGravity = 64.f;
-	constexpr float kJumpSpeed = 20.5f;
-	constexpr float kMaxFallSpeed = 30.f;
-	constexpr float kGroundSpeed = 14.f;
-	constexpr float kAirSpeed = 10.f;
-	constexpr float kGroundAcceleration = 120.f;
-	constexpr float kGroundDeceleration = 140.f;
-	constexpr float kAirAcceleration = 48.f;
-	constexpr float kAirDeceleration = 36.f;
-	constexpr float kCoyoteTime = 0.08f;
-	constexpr float kJumpBufferTime = 0.20f;
-	constexpr float kJumpReleaseMultiplier = 0.4f;
-	constexpr float kCameraFollowStrength = 10.f;
+	constexpr float kPlayerWidth = 3.f;
+	constexpr float kPlayerHeight = 6.f;
 
-	constexpr float cameraZoom = 32;
+	struct DebugTuning
+	{
+		float playerMoveSpeed = 14.f;
+		float jumpForce = 20.f;
+		float gravity = 20.f;
+		float drag = 0.01f;
+		float cameraZoom = 32.f;
+		float cameraFollowStrength = 10.f;
+		bool showGrid = true;
+		float gridAlpha = 0.20f;
+		float gridLineWidth = 0.05f;
+	};
 
 	Room gRoom;
 	Player gPlayer;
 	gl2d::Camera gCamera;
 	glm::vec2 gSpawnPoint = {};
-
-	float approach(float current, float target, float maxDelta)
-	{
-		if (current < target)
-		{
-			return std::min(current + maxDelta, target);
-		}
-
-		return std::max(current - maxDelta, target);
-	}
-
-	bool isSolid(const Room &room, int x, int y)
-	{
-		if (x < 0 || x >= room.size.x || y >= room.size.y)
-		{
-			return true;
-		}
-
-		if (y < 0)
-		{
-			return false;
-		}
-
-		const Block *block = room.getBlockSafe(x, y);
-		return block && block->solid;
-	}
+	DebugTuning gTuning;
 
 	void fillSolidRect(Room &room, int minX, int minY, int maxX, int maxY)
 	{
@@ -79,11 +54,14 @@ namespace
 
 	void respawnPlayer()
 	{
-		gPlayer.position = gSpawnPoint;
-		gPlayer.velocity = {};
-		gPlayer.grounded = false;
-		gPlayer.coyoteTimer = 0.f;
-		gPlayer.jumpBufferTimer = 0.f;
+		gPlayer.physics = {};
+		gPlayer.physics.transform.w = kPlayerWidth;
+		gPlayer.physics.transform.h = kPlayerHeight;
+		gPlayer.physics.teleport(gSpawnPoint);
+		gPlayer.moveSpeed = gTuning.playerMoveSpeed;
+
+		gCamera = {};
+		gCamera.zoom = gTuning.cameraZoom;
 	}
 
 	void createStarterRoom()
@@ -101,165 +79,49 @@ namespace
 		fillSolidRect(gRoom, 104, 26, 116, 26);
 		fillSolidRect(gRoom, 124, 18, 138, 18);
 
-		gSpawnPoint = {14.f, 32.f - gPlayer.size.y};
+		gSpawnPoint = {14.f + kPlayerWidth * 0.5f, 32.f - kPlayerHeight * 0.5f};
 
-		gCamera = {};
-		gCamera.zoom = cameraZoom;
 		respawnPlayer();
 	}
 
-	bool isStandingOnGround(const Player &player, const Room &room)
+	void updatePlayer(float deltaTime, float moveInput, bool jumpHeld)
 	{
-		const int minTileX = static_cast<int>(std::floor(player.position.x + 0.001f));
-		const int maxTileX = static_cast<int>(std::floor(player.position.x + player.size.x - 0.001f));
-		const int tileY = static_cast<int>(std::floor(player.position.y + player.size.y + 0.05f));
+		gPlayer.moveSpeed = gTuning.playerMoveSpeed;
 
-		for (int x = minTileX; x <= maxTileX; x++)
+		if (moveInput < 0.f)
 		{
-			if (isSolid(room, x, tileY))
-			{
-				return true;
-			}
+			gPlayer.physics.transform.pos.x -= gPlayer.moveSpeed * deltaTime;
+		}
+		else if (moveInput > 0.f)
+		{
+			gPlayer.physics.transform.pos.x += gPlayer.moveSpeed * deltaTime;
 		}
 
-		return false;
+		if (jumpHeld)
+		{
+			gPlayer.physics.jump(gTuning.jumpForce);
+		}
+
+		gPlayer.physics.applyGravity(gTuning.gravity);
+		gPlayer.physics.updateForces(deltaTime, gTuning.drag);
+		gPlayer.physics.resolveConstrains(gRoom);
+		gPlayer.physics.updateFinal();
 	}
 
-	void movePlayerHorizontal(Player &player, const Room &room, float deltaTime)
-	{
-		player.position.x += player.velocity.x * deltaTime;
-
-		const int minTileY = static_cast<int>(std::floor(player.position.y));
-		const int maxTileY = static_cast<int>(std::floor(player.position.y + player.size.y - 0.001f));
-
-		if (player.velocity.x > 0.f)
-		{
-			const int rightTile = static_cast<int>(std::floor(player.position.x + player.size.x - 0.001f));
-			for (int y = minTileY; y <= maxTileY; y++)
-			{
-				if (isSolid(room, rightTile, y))
-				{
-					player.position.x = rightTile - player.size.x;
-					player.velocity.x = 0.f;
-					return;
-				}
-			}
-		}
-		else if (player.velocity.x < 0.f)
-		{
-			const int leftTile = static_cast<int>(std::floor(player.position.x));
-			for (int y = minTileY; y <= maxTileY; y++)
-			{
-				if (isSolid(room, leftTile, y))
-				{
-					player.position.x = leftTile + 1.f;
-					player.velocity.x = 0.f;
-					return;
-				}
-			}
-		}
-	}
-
-	bool movePlayerVertical(Player &player, const Room &room, float deltaTime)
-	{
-		player.position.y += player.velocity.y * deltaTime;
-
-		const int minTileX = static_cast<int>(std::floor(player.position.x + 0.001f));
-		const int maxTileX = static_cast<int>(std::floor(player.position.x + player.size.x - 0.001f));
-
-		if (player.velocity.y > 0.f)
-		{
-			const int bottomTile = static_cast<int>(std::floor(player.position.y + player.size.y - 0.001f));
-			for (int x = minTileX; x <= maxTileX; x++)
-			{
-				if (isSolid(room, x, bottomTile))
-				{
-					player.position.y = bottomTile - player.size.y;
-					player.velocity.y = 0.f;
-					return true;
-				}
-			}
-		}
-		else if (player.velocity.y < 0.f)
-		{
-			const int topTile = static_cast<int>(std::floor(player.position.y));
-			for (int x = minTileX; x <= maxTileX; x++)
-			{
-				if (isSolid(room, x, topTile))
-				{
-					player.position.y = topTile + 1.f;
-					player.velocity.y = 0.f;
-					return false;
-				}
-			}
-		}
-
-		return false;
-	}
-
-	void updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpReleased)
-	{
-		if (gPlayer.grounded)
-		{
-			gPlayer.coyoteTimer = kCoyoteTime;
-		}
-		else
-		{
-			gPlayer.coyoteTimer = std::max(0.f, gPlayer.coyoteTimer - deltaTime);
-		}
-
-		if (jumpPressed)
-		{
-			gPlayer.jumpBufferTimer = kJumpBufferTime;
-		}
-		else
-		{
-			gPlayer.jumpBufferTimer = std::max(0.f, gPlayer.jumpBufferTimer - deltaTime);
-		}
-
-		const float desiredSpeed = moveInput * (gPlayer.grounded ? kGroundSpeed : kAirSpeed);
-		const float acceleration = (moveInput != 0.f)
-			? (gPlayer.grounded ? kGroundAcceleration : kAirAcceleration)
-			: (gPlayer.grounded ? kGroundDeceleration : kAirDeceleration);
-
-		gPlayer.velocity.x = approach(gPlayer.velocity.x, desiredSpeed, acceleration * deltaTime);
-
-		if (gPlayer.jumpBufferTimer > 0.f && gPlayer.coyoteTimer > 0.f)
-		{
-			gPlayer.velocity.y = -kJumpSpeed;
-			gPlayer.grounded = false;
-			gPlayer.coyoteTimer = 0.f;
-			gPlayer.jumpBufferTimer = 0.f;
-		}
-
-		gPlayer.velocity.y = std::min(gPlayer.velocity.y + kGravity * deltaTime, kMaxFallSpeed);
-
-		if (jumpReleased && gPlayer.velocity.y < 0.f)
-		{
-			gPlayer.velocity.y *= kJumpReleaseMultiplier;
-		}
-
-		movePlayerHorizontal(gPlayer, gRoom, deltaTime);
-		const bool landed = movePlayerVertical(gPlayer, gRoom, deltaTime);
-
-		gPlayer.grounded = landed || isStandingOnGround(gPlayer, gRoom);
-		if (gPlayer.grounded)
-		{
-			gPlayer.coyoteTimer = kCoyoteTime;
-		}
-	}
-
+	//DON'T TOUCH THIS CODE!!!!!
 	void updateCamera(int width, int height, float deltaTime)
 	{
+		gCamera.zoom = gTuning.cameraZoom;
 
 		glm::vec2 roomSize = glm::vec2(gRoom.size);
-		const glm::vec2 viewSize = glm::vec2(width, height) / gCamera.zoom;
+		glm::vec2 viewSize = glm::vec2(width, height) / gCamera.zoom;
 		glm::vec2 maxCamera = roomSize - viewSize;
 		maxCamera.x = std::max(maxCamera.x, 0.f);
 		maxCamera.y = std::max(maxCamera.y, 0.f);
 
-		gCamera.follow(gPlayer.getCenter(), deltaTime * (kCameraFollowStrength * 10.f),
-			0, 0.f, width, height);
+		//DON'T TOUCH THIS CODE!!!!!
+		gCamera.follow(gPlayer.getCenter(), 10,
+			0.f, 0.f, width, height);
 		//gCamera.position = glm::clamp(gCamera.position, glm::vec2(0.f), maxCamera);
 	}
 
@@ -268,32 +130,110 @@ namespace
 		const gl2d::Color4f roomBackground = {0.10f, 0.11f, 0.15f, 1.f};
 		const gl2d::Color4f blockColor = {0.23f, 0.26f, 0.32f, 1.f};
 
-		renderer.renderRectangle({0.f, 0.f, float(gRoom.size.x), float(gRoom.size.y)}, roomBackground);
+		renderer.renderRectangle({0.f, 0.f, static_cast<float>(gRoom.size.x), static_cast<float>(gRoom.size.y)}, roomBackground);
 
 		for (int y = 0; y < gRoom.size.y; y++)
 		{
 			for (int x = 0; x < gRoom.size.x; x++)
 			{
-				const Block &block = gRoom.getBlockUnsafe(x, y);
-				if (!block.solid)
+				if (!gRoom.getBlockUnsafe(x, y).solid)
 				{
 					continue;
 				}
 
-				renderer.renderRectangle(
-					{float(x), float(y), 1.f, 1.f},
-					blockColor);
+				renderer.renderRectangle({static_cast<float>(x), static_cast<float>(y), 1.f, 1.f}, blockColor);
 			}
+		}
+	}
+
+	void drawGrid()
+	{
+		if (!gTuning.showGrid)
+		{
+			return;
+		}
+
+		const gl2d::Color4f gridColor = {0.80f, 0.84f, 0.90f, gTuning.gridAlpha};
+
+		for (int x = 0; x <= gRoom.size.x; x++)
+		{
+			renderer.renderLine(
+				{static_cast<float>(x), 0.f},
+				{static_cast<float>(x), static_cast<float>(gRoom.size.y)},
+				gridColor,
+				gTuning.gridLineWidth);
+		}
+
+		for (int y = 0; y <= gRoom.size.y; y++)
+		{
+			renderer.renderLine(
+				{0.f, static_cast<float>(y)},
+				{static_cast<float>(gRoom.size.x), static_cast<float>(y)},
+				gridColor,
+				gTuning.gridLineWidth);
 		}
 	}
 
 	void drawPlayer()
 	{
-		const gl2d::Color4f playerColor = gPlayer.grounded
+		const gl2d::Color4f playerColor = gPlayer.physics.downTouch
 			? gl2d::Color4f{1.0f, 0.63f, 0.19f, 1.f}
 			: gl2d::Color4f{1.0f, 0.84f, 0.30f, 1.f};
 
-		renderer.renderRectangle({gPlayer.position.x, gPlayer.position.y, gPlayer.size.x, gPlayer.size.y}, playerColor);
+		renderer.renderRectangle(gPlayer.physics.transform.getAABB(), playerColor);
+	}
+
+	void drawDebugWindow()
+	{
+#if REMOVE_IMGUI == 0
+		ImGui::SetNextWindowBgAlpha(0.88f);
+		ImGui::SetNextWindowSize({320.f, 0.f}, ImGuiCond_FirstUseEver);
+
+		if (ImGui::Begin("Movement / Camera"))
+		{
+			if (ImGui::Button("Respawn"))
+			{
+				respawnPlayer();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Reset Tunables"))
+			{
+				gTuning = {};
+				respawnPlayer();
+			}
+
+			ImGui::Separator();
+			ImGui::TextUnformatted("Player");
+			ImGui::SliderFloat("Move Speed", &gTuning.playerMoveSpeed, 0.5f, 20.f, "%.2f");
+			ImGui::SliderFloat("Jump Force", &gTuning.jumpForce, 0.5f, 20.f, "%.2f");
+			ImGui::SliderFloat("Gravity", &gTuning.gravity, 0.f, 60.f, "%.2f");
+			ImGui::SliderFloat("Drag", &gTuning.drag, 0.f, 0.15f, "%.4f");
+
+			ImGui::Separator();
+			ImGui::TextUnformatted("Camera");
+			ImGui::SliderFloat("Zoom", &gTuning.cameraZoom, 4.f, 96.f, "%.1f");
+			ImGui::SliderFloat("Follow Strength", &gTuning.cameraFollowStrength, 0.f, 30.f, "%.2f");
+
+			ImGui::Separator();
+			ImGui::TextUnformatted("World");
+			ImGui::Checkbox("Show Grid", &gTuning.showGrid);
+			if (gTuning.showGrid)
+			{
+				ImGui::SliderFloat("Grid Alpha", &gTuning.gridAlpha, 0.02f, 1.f, "%.2f");
+				ImGui::SliderFloat("Grid Width", &gTuning.gridLineWidth, 0.005f, 0.15f, "%.3f");
+			}
+
+			ImGui::Separator();
+			ImGui::Text("Pos: %.2f, %.2f", gPlayer.physics.transform.pos.x, gPlayer.physics.transform.pos.y);
+			ImGui::Text("Vel: %.2f, %.2f", gPlayer.physics.velocity.x, gPlayer.physics.velocity.y);
+			ImGui::Text("Touch: D%d U%d L%d R%d",
+				gPlayer.physics.downTouch ? 1 : 0,
+				gPlayer.physics.upTouch ? 1 : 0,
+				gPlayer.physics.leftTouch ? 1 : 0,
+				gPlayer.physics.rightTouch ? 1 : 0);
+		}
+		ImGui::End();
+#endif
 	}
 }
 
@@ -380,32 +320,27 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 
 	renderer.clearScreen();
 
+	deltaTime = std::min(deltaTime, 0.05f);
 
-	const bool moveLeft = input.isButtonHeld(platform::Button::A) || input.isButtonHeld(platform::Button::Left);
-	const bool moveRight = input.isButtonHeld(platform::Button::D) || input.isButtonHeld(platform::Button::Right);
-	const bool jumpPressed =
-		input.isButtonPressed(platform::Button::Space) ||
-		input.isButtonPressed(platform::Button::W) ||
-		input.isButtonPressed(platform::Button::Up);
-	const bool jumpReleased =
-		input.isButtonReleased(platform::Button::Space) ||
-		input.isButtonReleased(platform::Button::W) ||
-		input.isButtonReleased(platform::Button::Up);
+	bool moveLeft = input.isButtonHeld(platform::Button::A) || input.isButtonHeld(platform::Button::Left);
+	bool moveRight = input.isButtonHeld(platform::Button::D) || input.isButtonHeld(platform::Button::Right);
+	bool jumpHeld =
+		input.isButtonHeld(platform::Button::Space) ||
+		input.isButtonHeld(platform::Button::W) ||
+		input.isButtonHeld(platform::Button::Up);
 
 	float moveInput = 0.f;
 	if (moveLeft) { moveInput -= 1.f; }
 	if (moveRight) { moveInput += 1.f; }
 
-	//renderer.renderRectangle({0.f, 0.f, float(w), float(h)},
-	//	{0.05f, 0.07f, 0.10f, 1.f});
-
-	updatePlayer(deltaTime, moveInput, jumpPressed, jumpReleased);
+	updatePlayer(deltaTime, moveInput, jumpHeld);
 	updateCamera(w, h, deltaTime);
 	renderer.setCamera(gCamera);
 
-
 	drawRoom();
+	drawGrid();
 	drawPlayer();
+	drawDebugWindow();
 
 #if GL2D_USE_SDL_GPU
 	if (!renderer.gpuDevice)
