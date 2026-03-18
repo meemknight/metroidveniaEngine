@@ -1,4 +1,5 @@
 #include "gameLayer.h"
+#include "GameRenderWindow.h"
 #include "Gameplay.h"
 #include "LevelEditor.h"
 #include "imguiTools.h"
@@ -15,6 +16,7 @@ namespace
 {
 	Gameplay gameplay;
 	LevelEditor levelEditor;
+	GameRenderWindow gameRenderWindow;
 	bool levelEditorMode = false;
 }
 
@@ -81,10 +83,10 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 {
 	(void)sdlRenderer;
 
-	int w = platform::getFrameBufferSizeX();
-	int h = platform::getFrameBufferSizeY();
+	int mainWindowW = platform::getFrameBufferSizeX();
+	int mainWindowH = platform::getFrameBufferSizeY();
 
-	renderer.updateWindowMetrics(w, h);
+	renderer.updateWindowMetrics(mainWindowW, mainWindowH);
 
 	if (input.isButtonPressed(platform::Button::F1))
 	{
@@ -103,6 +105,19 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	}
 #endif
 
+	gameRenderWindow.begin();
+
+	platform::Input renderInput = input;
+	glm::ivec2 renderSize = gameRenderWindow.getRenderSize({mainWindowW, mainWindowH});
+	bool renderIntoWindow = gameRenderWindow.usesWindowFrameBuffer();
+
+	if (renderIntoWindow)
+	{
+		renderInput = gameRenderWindow.remapInput(input);
+	}
+
+	renderer.updateWindowMetrics(renderSize.x, renderSize.y);
+
 	if (input.isButtonPressed(platform::Button::F6))
 	{
 		levelEditorMode = !levelEditorMode;
@@ -112,23 +127,57 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		}
 	}
 
-	renderer.clearScreen();
-
-	if (levelEditorMode)
+	if (renderIntoWindow)
 	{
-		levelEditor.update(deltaTime, input, renderer, gameplay.room);
+		// Keep the swapchain clear behind the ImGui viewport, then clear the offscreen game target.
+		renderer.clearScreen();
+		gameRenderWindow.frameBuffer.bind();
+		renderer.clearScreen();
+		gameRenderWindow.frameBuffer.unbind();
 	}
 	else
 	{
-		gameplay.update(deltaTime, input, renderer);
+		renderer.clearScreen();
 	}
 
-#if GL2D_USE_SDL_GPU
-	if (!renderer.gpuDevice)
-#endif
+	if (levelEditorMode)
 	{
-		renderer.flush();
+		levelEditor.update(deltaTime, renderInput, renderer, gameplay.room,
+			gameRenderWindow.contentHovered, gameRenderWindow.contentFocused);
 	}
+	else
+	{
+		gameplay.update(deltaTime, renderInput, renderer);
+	}
+
+	if (renderIntoWindow)
+	{
+	#if GL2D_USE_SDL_GPU
+		if (renderer.gpuDevice)
+		{
+			renderer.flushFBO(gameRenderWindow.frameBuffer, true);
+		}
+		else
+	#endif
+		{
+			gameRenderWindow.frameBuffer.bind();
+			renderer.flush(true);
+			gameRenderWindow.frameBuffer.unbind();
+		}
+
+		renderer.updateWindowMetrics(mainWindowW, mainWindowH);
+	}
+	else
+	{
+	#if GL2D_USE_SDL_GPU
+		if (!renderer.gpuDevice)
+	#endif
+		{
+			renderer.flush();
+		}
+	}
+
+	gameRenderWindow.end();
 
 	return true;
 }
@@ -137,4 +186,5 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 void closeGame()
 {
 	levelEditor.cleanup();
+	gameRenderWindow.cleanup();
 }

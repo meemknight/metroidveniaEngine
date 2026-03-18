@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <glm/glm.hpp>
-#include <platformTools.h>
-
 namespace
 {
 	constexpr float kPlayerWidth = 3.f;
@@ -44,7 +42,7 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 	if (moveRight) { moveInput += 1.f; }
 
 	updatePlayer(deltaTime, moveInput, jumpPressed, jumpHeld);
-	updateCamera(platform::getFrameBufferSizeX(), platform::getFrameBufferSizeY());
+	updateCamera(renderer.windowW, renderer.windowH);
 	renderer.setCamera(camera);
 
 	drawRoom(renderer);

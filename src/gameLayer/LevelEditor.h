@@ -29,7 +29,8 @@ struct LevelEditor
 	void init();
 	void cleanup();
 	void enter(Room &room, gl2d::Renderer2D &renderer);
-	void update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
+	void update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room,
+		bool gameViewHovered, bool gameViewFocused);
 
 	glm::vec2 getViewSize(gl2d::Renderer2D &renderer);
 	glm::vec2 getViewCenter(gl2d::Renderer2D &renderer);
@@ -39,8 +40,8 @@ struct LevelEditor
 	void focusRoom(Room &room, gl2d::Renderer2D &renderer);
 	void updateHoveredTile(platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
 	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
-	void updateShortcuts(platform::Input &input);
-	void updateTools(platform::Input &input, Room &room);
+	void updateShortcuts(platform::Input &input, bool gameViewFocused);
+	void updateTools(platform::Input &input, Room &room, bool gameViewHovered);
 	void setBlock(Room &room, int x, int y, bool solid);
 	void fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, bool solid);
 	void resizeRoom(Room &room, int newSizeX, int newSizeY);

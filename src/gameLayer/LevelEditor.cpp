@@ -11,8 +11,13 @@
 namespace
 {
 #if REMOVE_IMGUI == 0
-	bool imguiBlocksEditorMouse()
+	bool imguiBlocksEditorMouse(bool gameViewHovered)
 	{
+		if (gameViewHovered)
+		{
+			return false;
+		}
+
 		if (!ImGui::isImguiWindowOpen())
 		{
 			return false;
@@ -54,7 +59,8 @@ void LevelEditor::enter(Room &room, gl2d::Renderer2D &renderer)
 	}
 }
 
-void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room)
+void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room,
+	bool gameViewHovered, bool gameViewFocused)
 {
 	deltaTime = std::min(deltaTime, 0.05f);
 
@@ -65,10 +71,10 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		focusRoom(room, renderer);
 	}
 
-	updateShortcuts(input);
+	updateShortcuts(input, gameViewFocused);
 	updateCamera(deltaTime, input, renderer, room);
 	updateHoveredTile(input, renderer, room);
-	updateTools(input, room);
+	updateTools(input, room, gameViewHovered);
 
 	renderer.setCamera(camera);
 
@@ -190,7 +196,7 @@ void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	clampCamera(room, renderer);
 }
 
-void LevelEditor::updateShortcuts(platform::Input &input)
+void LevelEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
 {
 	if (input.isButtonPressed(platform::Button::Escape))
 	{
@@ -209,7 +215,7 @@ void LevelEditor::updateShortcuts(platform::Input &input)
 	}
 
 	ImGuiIO &io = ImGui::GetIO();
-	if (!io.WantCaptureKeyboard)
+	if (gameViewFocused || !io.WantCaptureKeyboard)
 	{
 		if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; }
 		if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; }
@@ -226,10 +232,10 @@ void LevelEditor::updateShortcuts(platform::Input &input)
 #endif
 }
 
-void LevelEditor::updateTools(platform::Input &input, Room &room)
+void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewHovered)
 {
 #if REMOVE_IMGUI == 0
-	if (imguiBlocksEditorMouse())
+	if (imguiBlocksEditorMouse(gameViewHovered))
 	{
 		return;
 	}
