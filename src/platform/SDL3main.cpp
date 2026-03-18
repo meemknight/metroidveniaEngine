@@ -329,10 +329,16 @@ static bool tickOneFrame()
 	ImGui_ImplSDL3_NewFrame();
 	ImGui::NewFrame();
 
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, {});
-	ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, {});
-	ImGui::DockSpaceOverViewport();
-	ImGui::PopStyleColor(2);
+	if (ImGui::isImguiWindowOpen())
+	{
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, {});
+		ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, {});
+		ImGui::DockSpaceOverViewport(
+			0,
+			ImGui::GetMainViewport(),
+			ImGuiDockNodeFlags_PassthruCentralNode);
+		ImGui::PopStyleColor(2);
+	}
 #endif
 
 	platform::Input input = {};
