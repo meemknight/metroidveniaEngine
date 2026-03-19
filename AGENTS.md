@@ -21,6 +21,8 @@ General Instructions:
 
 - Camera behavior is sensitive. Do not casually refactor camera code or reorder camera setup.
 
+- If compile, link, or CMake regenerate fails in this environment, do not get stuck forcing it. It is okay to stop after the code changes, mention what failed, and let the user compile locally.
+
 
 Coding Guidelines:
 

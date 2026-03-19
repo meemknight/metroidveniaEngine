@@ -54,4 +54,5 @@ struct Gameplay
 	bool levelFileHasError = false;
 	int levelLoadRevision = 0;
 	bool requestLevelEditorMode = false;
+	bool requestWorldEditorMode = false;
 };

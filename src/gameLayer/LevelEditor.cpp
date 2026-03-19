@@ -634,7 +634,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		bool hasLoadedLevel = !currentLevelName.empty();
 
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
-		ImGui::TextUnformatted("F6 switches between gameplay and editor");
+		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
 		ImGui::TextUnformatted("Ctrl+S saves the current level");
 		ImGui::TextUnformatted("Escape cancels an active rect or measure selection");
@@ -904,6 +904,11 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 		ImGui::SameLine();
 		ImGui::RadioButton("Level Editor", true);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("World Editor", false))
+		{
+			requestWorldEditorMode = true;
+		}
 
 		ImGui::Separator();
 		ImGui::Text("Folder: %s", getRoomFilesFolder().c_str());

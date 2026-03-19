@@ -294,6 +294,7 @@ void Gameplay::drawDebugWindow()
 	if (ImGui::Begin("Editor"))
 	{
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
+		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
 
 		if (ImGui::Button("Respawn"))
 		{
@@ -400,6 +401,11 @@ void Gameplay::drawLevelFilesWindow()
 		if (ImGui::RadioButton("Level Editor", false))
 		{
 			requestLevelEditorMode = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::RadioButton("World Editor", false))
+		{
+			requestWorldEditorMode = true;
 		}
 
 		ImGui::Separator();
