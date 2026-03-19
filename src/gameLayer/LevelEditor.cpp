@@ -1,5 +1,6 @@
 #include "LevelEditor.h"
 
+#include "RoomIo.h"
 #include "imguiTools.h"
 
 #include <algorithm>
@@ -10,6 +11,12 @@
 
 namespace
 {
+	template<size_t N>
+	void copyStringToBuffer(char (&buffer)[N], std::string const &text)
+	{
+		std::snprintf(buffer, N, "%s", text.c_str());
+	}
+
 #if REMOVE_IMGUI == 0
 	bool imguiBlocksEditorMouse(bool gameViewHovered)
 	{
@@ -25,6 +32,14 @@ namespace
 
 		return ImGui::IsAnyItemActive() || ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
 	}
+
+	bool editorModalPopupOpen()
+	{
+		return
+			ImGui::IsPopupOpen("Unsaved Changes") ||
+			ImGui::IsPopupOpen("Delete Level") ||
+			ImGui::IsPopupOpen("Discard Current Changes");
+	}
 #endif
 }
 
@@ -37,6 +52,7 @@ void LevelEditor::init()
 
 	std::string fontPath = std::string(RESOURCES_PATH) + "arial.ttf";
 	measureFont.createFromFile(fontPath.c_str());
+	ensureRoomFilesFolder();
 }
 
 void LevelEditor::cleanup()
@@ -46,6 +62,16 @@ void LevelEditor::cleanup()
 
 void LevelEditor::enter(Room &room, gl2d::Renderer2D &renderer)
 {
+	if (currentLevelName.empty())
+	{
+		camera.zoom = tuning.cameraZoom;
+		if (!cameraInitialized)
+		{
+			setViewCenter({}, renderer);
+		}
+		return;
+	}
+
 	syncPendingRoomSize(room);
 
 	if (!cameraInitialized)
@@ -64,26 +90,48 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 {
 	deltaTime = std::min(deltaTime, 0.05f);
 
-	syncPendingRoomSize(room);
-
-	if (!cameraInitialized)
+#if REMOVE_IMGUI == 0
+	// Modal popups should fully own input so the world view doesn't keep reacting underneath them.
+	if (editorModalPopupOpen())
 	{
-		focusRoom(room, renderer);
+		input = {};
+	}
+#endif
+
+	if (!currentLevelName.empty())
+	{
+		syncPendingRoomSize(room);
+
+		if (!cameraInitialized)
+		{
+			focusRoom(room, renderer);
+		}
+	}
+	else if (!cameraInitialized)
+	{
+		camera.zoom = tuning.cameraZoom;
+		setViewCenter({}, renderer);
 	}
 
-	updateShortcuts(input, gameViewFocused);
+	updateShortcuts(input, room, gameViewFocused);
 	updateCamera(deltaTime, input, renderer, room);
 	updateHoveredTile(input, renderer, room);
 	updateTools(input, room, gameViewHovered);
 
 	renderer.setCamera(camera);
 
-	drawRoom(room, renderer);
-	drawGrid(room, renderer);
-	drawRectPreview(renderer);
-	drawHoveredTile(renderer);
-	drawMeasureText(renderer);
+	if (!currentLevelName.empty())
+	{
+		drawRoom(room, renderer);
+		drawGrid(room, renderer);
+		drawRectPreview(renderer);
+		drawHoveredTile(renderer);
+		drawMeasureText(renderer);
+	}
+
 	drawWindow(room, renderer);
+	drawLevelFilesWindow(room, renderer);
+	drawUnsavedChangesWindow(room, renderer);
 }
 
 glm::vec2 LevelEditor::getViewSize(gl2d::Renderer2D &renderer)
@@ -153,6 +201,11 @@ void LevelEditor::focusRoom(Room &room, gl2d::Renderer2D &renderer)
 void LevelEditor::updateHoveredTile(platform::Input &input, gl2d::Renderer2D &renderer, Room &room)
 {
 	mouseScreenPosition = {static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)};
+	if (currentLevelName.empty())
+	{
+		hoveredTileValid = false;
+		return;
+	}
 
 	glm::vec2 mouseWorld = screenToWorld({static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)}, renderer);
 
@@ -193,14 +246,25 @@ void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	camera.zoom = tuning.cameraZoom;
 
 	setViewCenter(center, renderer);
-	clampCamera(room, renderer);
+	if (!currentLevelName.empty())
+	{
+		clampCamera(room, renderer);
+	}
 }
 
-void LevelEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
+void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameViewFocused)
 {
 	if (input.isButtonPressed(platform::Button::Escape))
 	{
 		rectDragActive = false;
+	}
+
+	bool saveShortcut = !currentLevelName.empty() &&
+		input.isButtonHeld(platform::Button::LeftCtrl) &&
+		input.isButtonPressed(platform::Button::S);
+	if (saveShortcut)
+	{
+		saveCurrentLevel(room);
 	}
 
 #if REMOVE_IMGUI == 0
@@ -234,6 +298,12 @@ void LevelEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
 
 void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewHovered)
 {
+	if (currentLevelName.empty())
+	{
+		rectDragActive = false;
+		return;
+	}
+
 #if REMOVE_IMGUI == 0
 	if (imguiBlocksEditorMouse(gameViewHovered))
 	{
@@ -309,7 +379,13 @@ void LevelEditor::setBlock(Room &room, int x, int y, bool solid)
 {
 	if (Block *block = room.getBlockSafe(x, y))
 	{
+		if (block->solid == solid)
+		{
+			return;
+		}
+
 		block->solid = solid;
+		levelDirty = true;
 	}
 }
 
@@ -334,6 +410,11 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	newSizeX = std::max(newSizeX, 1);
 	newSizeY = std::max(newSizeY, 1);
 
+	if (room.size.x == newSizeX && room.size.y == newSizeY)
+	{
+		return;
+	}
+
 	Room resizedRoom = {};
 	resizedRoom.create(newSizeX, newSizeY);
 
@@ -352,6 +433,7 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	pendingRoomSize = room.size;
 	hoveredTileValid = false;
 	rectDragActive = false;
+	levelDirty = true;
 }
 
 glm::vec4 LevelEditor::getRectPreview(glm::ivec2 a, glm::ivec2 b)
@@ -371,25 +453,32 @@ glm::vec4 LevelEditor::getRectPreview(glm::ivec2 a, glm::ivec2 b)
 
 void LevelEditor::clampCamera(Room &room, gl2d::Renderer2D &renderer)
 {
+	// Let the editor camera drift a bit outside the room so editing near edges feels less cramped.
+	constexpr float cameraPadding = 30.f;
+
 	glm::vec2 center = getViewCenter(renderer);
 	glm::vec2 viewSize = getViewSize(renderer);
 
-	if (room.size.x <= viewSize.x)
+	float minX = viewSize.x * 0.5f - cameraPadding;
+	float maxX = room.size.x - viewSize.x * 0.5f + cameraPadding;
+	if (minX > maxX)
 	{
 		center.x = room.size.x * 0.5f;
 	}
 	else
 	{
-		center.x = std::clamp(center.x, viewSize.x * 0.5f, room.size.x - viewSize.x * 0.5f);
+		center.x = std::clamp(center.x, minX, maxX);
 	}
 
-	if (room.size.y <= viewSize.y)
+	float minY = viewSize.y * 0.5f - cameraPadding;
+	float maxY = room.size.y - viewSize.y * 0.5f + cameraPadding;
+	if (minY > maxY)
 	{
 		center.y = room.size.y * 0.5f;
 	}
 	else
 	{
-		center.y = std::clamp(center.y, viewSize.y * 0.5f, room.size.y - viewSize.y * 0.5f);
+		center.y = std::clamp(center.y, minY, maxY);
 	}
 
 	setViewCenter(center, renderer);
@@ -541,12 +630,20 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 
 	if (ImGui::Begin("Level Editor"))
 	{
+		bool hasLoadedLevel = !currentLevelName.empty();
+
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 		ImGui::TextUnformatted("F6 switches between gameplay and editor");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
+		ImGui::TextUnformatted("Ctrl+S saves the current level");
 		ImGui::TextUnformatted("Escape cancels an active rect or measure selection");
+		if (!hasLoadedLevel)
+		{
+			ImGui::TextColored({1.f, 0.88f, 0.35f, 1.f}, "Load or create a level file before editing.");
+		}
 
 		ImGui::Separator();
+		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
 		ImGui::TextUnformatted("Tools");
 		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; }
 		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; }
@@ -572,7 +669,14 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 
 		ImGui::Separator();
 		ImGui::TextUnformatted("Room");
-		ImGui::Text("Current Size: %d x %d", room.size.x, room.size.y);
+		if (hasLoadedLevel)
+		{
+			ImGui::Text("Current Size: %d x %d", room.size.x, room.size.y);
+		}
+		else
+		{
+			ImGui::TextUnformatted("Current Size: -");
+		}
 		ImGui::InputInt("Width", &pendingRoomSize.x);
 		ImGui::InputInt("Height", &pendingRoomSize.y);
 		if (ImGui::Button("Apply Resize"))
@@ -585,6 +689,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		{
 			focusRoom(room, renderer);
 		}
+		if (!hasLoadedLevel) { ImGui::EndDisabled(); }
 
 		ImGui::Separator();
 		ImGui::TextUnformatted("View");
@@ -598,7 +703,11 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 
 		ImGui::Separator();
-		if (hoveredTileValid)
+		if (!hasLoadedLevel)
+		{
+			ImGui::TextUnformatted("Hover Tile: no level loaded");
+		}
+		else if (hoveredTileValid)
 		{
 			ImGui::Text("Hover Tile: %d, %d", hoveredTile.x, hoveredTile.y);
 			ImGui::Text("Solid: %d", room.getBlockUnsafe(hoveredTile.x, hoveredTile.y).solid ? 1 : 0);
@@ -609,6 +718,394 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 
 		ImGui::Text("Camera: %.2f, %.2f", camera.position.x, camera.position.y);
+	}
+	ImGui::End();
+#endif
+}
+
+void LevelEditor::drawUnsavedChangesWindow(Room &room, gl2d::Renderer2D &renderer)
+{
+#if REMOVE_IMGUI == 0
+	if (ImGui::BeginPopupModal("Unsaved Changes", 0, ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		ImGui::TextUnformatted("The current level has unsaved changes.");
+		ImGui::TextUnformatted("Press Save Current or Ctrl+S first, or discard and continue.");
+
+		if (ImGui::Button("Discard", {120.f, 0.f}))
+		{
+			if (pendingFileAction == loadSelectedFileAction)
+			{
+				loadSelectedLevel(room, renderer);
+			}
+			else if (pendingFileAction == createNewFileAction)
+			{
+				createNewLevel(room, renderer);
+			}
+
+			pendingFileAction = noPendingFileAction;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel", {120.f, 0.f}))
+		{
+			pendingFileAction = noPendingFileAction;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+	}
+#endif
+}
+
+void LevelEditor::saveCurrentLevel(Room &room)
+{
+	if (currentLevelName.empty())
+	{
+		return;
+	}
+
+	RoomIoResult result = saveRoomToFile(room, currentLevelName.c_str());
+	fileActionHasError = !result.success;
+	fileActionMessage = result.message;
+
+	if (result.success)
+	{
+		levelDirty = false;
+	}
+}
+
+void LevelEditor::loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer)
+{
+	if (selectedLevelName.empty())
+	{
+		return;
+	}
+
+	Room loadedRoom = {};
+	RoomIoResult result = loadRoomFromFile(loadedRoom, selectedLevelName.c_str());
+	fileActionHasError = !result.success;
+	fileActionMessage = result.message;
+
+	if (result.success)
+	{
+		room = loadedRoom;
+		currentLevelName = result.levelName;
+		selectedLevelName = result.levelName;
+		pendingRoomSize = room.size;
+		newLevelSize = room.size;
+		hoveredTileValid = false;
+		rectDragActive = false;
+		levelDirty = false;
+		copyStringToBuffer(renameName, result.levelName);
+		focusRoom(room, renderer);
+	}
+}
+
+void LevelEditor::reloadCurrentLevel(Room &room, gl2d::Renderer2D &renderer)
+{
+	if (currentLevelName.empty())
+	{
+		return;
+	}
+
+	std::string previousSelection = selectedLevelName;
+	selectedLevelName = currentLevelName;
+	loadSelectedLevel(room, renderer);
+	selectedLevelName = currentLevelName.empty() ? previousSelection : currentLevelName;
+}
+
+void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
+{
+	if (newLevelName[0] == 0)
+	{
+		fileActionHasError = true;
+		fileActionMessage = "Type a name for the new level first";
+		return;
+	}
+
+	if (roomFileExists(newLevelName))
+	{
+		fileActionHasError = true;
+		fileActionMessage = "A level with that name already exists";
+		return;
+	}
+
+	Room newRoom = {};
+	newRoom.create(std::max(newLevelSize.x, 1), std::max(newLevelSize.y, 1));
+
+	RoomIoResult result = saveRoomToFile(newRoom, newLevelName);
+	fileActionHasError = !result.success;
+	fileActionMessage = result.message;
+
+	if (result.success)
+	{
+		room = newRoom;
+		currentLevelName = result.levelName;
+		selectedLevelName = result.levelName;
+		pendingRoomSize = room.size;
+		newLevelSize = room.size;
+		hoveredTileValid = false;
+		rectDragActive = false;
+		levelDirty = false;
+		newLevelName[0] = 0;
+		copyStringToBuffer(renameName, result.levelName);
+		focusRoom(room, renderer);
+	}
+}
+
+void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
+{
+#if REMOVE_IMGUI == 0
+	if (!ImGui::isImguiWindowOpen())
+	{
+		return;
+	}
+
+	RoomFilesListing levelFiles = listRoomFiles();
+
+	bool selectedLevelStillExists = selectedLevelName.empty();
+	bool currentLevelStillExists = currentLevelName.empty();
+	for (auto const &file : levelFiles.files)
+	{
+		if (file.name == selectedLevelName)
+		{
+			selectedLevelStillExists = true;
+		}
+
+		if (file.name == currentLevelName)
+		{
+			currentLevelStillExists = true;
+		}
+	}
+
+	if (!selectedLevelStillExists)
+	{
+		selectedLevelName.clear();
+	}
+
+	if (!currentLevelStillExists)
+	{
+		currentLevelName.clear();
+		renameName[0] = 0;
+		hoveredTileValid = false;
+		rectDragActive = false;
+		levelDirty = false;
+	}
+
+	ImGui::SetNextWindowBgAlpha(0.90f);
+	ImGui::SetNextWindowSize({420.f, 0.f}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin("Level Files"))
+	{
+		ImGui::Text("Folder: %s", getRoomFilesFolder().c_str());
+		if (currentLevelName.empty())
+		{
+			ImGui::TextUnformatted("Current Level: None loaded");
+		}
+		else if (levelDirty)
+		{
+			ImGui::TextColored({1.0f, 0.90f, 0.30f, 1.f}, "Current Level: %s*", currentLevelName.c_str());
+		}
+		else
+		{
+			ImGui::TextColored({0.35f, 1.f, 0.55f, 1.f}, "Current Level: %s", currentLevelName.c_str());
+		}
+		if (!currentLevelName.empty())
+		{
+			ImGui::Text("Room Size: %d x %d", room.size.x, room.size.y);
+		}
+		else
+		{
+			ImGui::TextUnformatted("Room Size: -");
+		}
+
+		ImGui::Separator();
+		ImGui::TextUnformatted("Create New");
+		ImGui::InputText("New Level Name", newLevelName, sizeof(newLevelName));
+		ImGui::InputInt("New Width", &newLevelSize.x);
+		ImGui::InputInt("New Height", &newLevelSize.y);
+
+		if (ImGui::Button("Create New Level"))
+		{
+			if (levelDirty)
+			{
+				pendingFileAction = createNewFileAction;
+				ImGui::OpenPopup("Unsaved Changes");
+			}
+			else
+			{
+				createNewLevel(room, renderer);
+			}
+		}
+
+		ImGui::Separator();
+		ImGui::Text("Existing Levels (%d)", static_cast<int>(levelFiles.files.size()));
+		//ImGui::TextColored({0.35f, 1.f, 0.55f, 1.f}, "Green = loaded"); //dont need this
+		//ImGui::TextColored({1.0f, 0.90f, 0.30f, 1.f}, "Yellow = loaded with unsaved changes"); //dont need this
+		if (!levelFiles.error.empty())
+		{
+			ImGui::TextColored({1.f, 0.45f, 0.35f, 1.f}, "%s", levelFiles.error.c_str());
+		}
+
+		if (ImGui::BeginChild("LevelFileList", {0.f, 220.f}, true))
+		{
+			for (auto const &file : levelFiles.files)
+			{
+				bool selected = file.name == selectedLevelName;
+				bool loaded = file.name == currentLevelName;
+				std::string label = file.name;
+				if (loaded)
+				{
+					label += levelDirty ? "  [loaded*]" : "  [loaded]";
+					ImGui::PushStyleColor(ImGuiCol_Text,
+						levelDirty ? ImVec4(1.0f, 0.90f, 0.30f, 1.f) : ImVec4(0.35f, 1.f, 0.55f, 1.f));
+				}
+
+				if (ImGui::Selectable(label.c_str(), selected))
+				{
+					selectedLevelName = file.name;
+				}
+
+				if (loaded)
+				{
+					ImGui::PopStyleColor();
+				}
+			}
+		}
+		ImGui::EndChild();
+
+		bool canLoadSelected = !selectedLevelName.empty();
+		bool canSaveCurrent = !currentLevelName.empty();
+		bool canRenameSelected = !selectedLevelName.empty();
+		bool canDeleteSelected = !selectedLevelName.empty();
+
+		if (!canLoadSelected) { ImGui::BeginDisabled(); }
+		if (ImGui::Button("Load Selected"))
+		{
+			if (levelDirty)
+			{
+				pendingFileAction = loadSelectedFileAction;
+				ImGui::OpenPopup("Unsaved Changes");
+			}
+			else
+			{
+				loadSelectedLevel(room, renderer);
+			}
+		}
+		if (!canLoadSelected) { ImGui::EndDisabled(); }
+
+		if (!canSaveCurrent) { ImGui::BeginDisabled(); }
+		ImGui::SameLine();
+		if (ImGui::Button("Save Current"))
+		{
+			saveCurrentLevel(room);
+		}
+		if (!canSaveCurrent) { ImGui::EndDisabled(); }
+
+		bool canDiscardCurrent = canSaveCurrent && levelDirty;
+		if (!canDiscardCurrent) { ImGui::BeginDisabled(); }
+		ImGui::SameLine();
+		if (ImGui::Button("Discard Changes"))
+		{
+			ImGui::OpenPopup("Discard Current Changes");
+		}
+		if (!canDiscardCurrent) { ImGui::EndDisabled(); }
+
+		ImGui::InputText("Rename To", renameName, sizeof(renameName));
+
+		if (!canRenameSelected) { ImGui::BeginDisabled(); }
+		if (ImGui::Button("Rename Selected"))
+		{
+			RoomIoResult result = renameRoomFile(selectedLevelName.c_str(), renameName);
+			fileActionHasError = !result.success;
+			fileActionMessage = result.message;
+
+			if (result.success)
+			{
+				if (currentLevelName == selectedLevelName)
+				{
+					currentLevelName = result.levelName;
+				}
+
+				selectedLevelName = result.levelName;
+				copyStringToBuffer(renameName, result.levelName);
+			}
+		}
+		if (!canRenameSelected) { ImGui::EndDisabled(); }
+
+		if (!canDeleteSelected) { ImGui::BeginDisabled(); }
+		ImGui::SameLine();
+		if (ImGui::Button("Delete Selected"))
+		{
+			pendingDeleteLevelName = selectedLevelName;
+			ImGui::OpenPopup("Delete Level");
+		}
+		if (!canDeleteSelected) { ImGui::EndDisabled(); }
+
+		if (ImGui::BeginPopupModal("Delete Level", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Delete \"%s\"?", pendingDeleteLevelName.c_str());
+			ImGui::TextUnformatted("This can't be undone.");
+
+			if (ImGui::Button("Delete", {120.f, 0.f}))
+			{
+				RoomIoResult result = deleteRoomFile(pendingDeleteLevelName.c_str());
+				fileActionHasError = !result.success;
+				fileActionMessage = result.message;
+
+				if (result.success)
+				{
+					if (currentLevelName == pendingDeleteLevelName)
+					{
+						currentLevelName.clear();
+						renameName[0] = 0;
+						hoveredTileValid = false;
+						rectDragActive = false;
+						levelDirty = false;
+					}
+
+					if (selectedLevelName == pendingDeleteLevelName)
+					{
+						selectedLevelName.clear();
+					}
+				}
+
+				pendingDeleteLevelName.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				pendingDeleteLevelName.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		if (ImGui::BeginPopupModal("Discard Current Changes", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Reload \"%s\" from disk and discard your edits?", currentLevelName.c_str());
+
+			if (ImGui::Button("Discard", {120.f, 0.f}))
+			{
+				reloadCurrentLevel(room, renderer);
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		if (!fileActionMessage.empty())
+		{
+			ImGui::Separator();
+			ImVec4 color = fileActionHasError
+				? ImVec4(1.f, 0.45f, 0.35f, 1.f)
+				: ImVec4(0.35f, 1.f, 0.55f, 1.f);
+			ImGui::TextColored(color, "%s", fileActionMessage.c_str());
+		}
 	}
 	ImGui::End();
 #endif

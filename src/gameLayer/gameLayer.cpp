@@ -18,6 +18,25 @@ namespace
 	LevelEditor levelEditor;
 	GameRenderWindow gameRenderWindow;
 	bool levelEditorMode = false;
+	int syncedGameplayLevelLoadRevision = -1;
+
+	void syncLevelFileNamesFromGameplayToEditor()
+	{
+		if (syncedGameplayLevelLoadRevision != gameplay.levelLoadRevision)
+		{
+			levelEditor.levelDirty = false;
+			syncedGameplayLevelLoadRevision = gameplay.levelLoadRevision;
+		}
+
+		levelEditor.currentLevelName = gameplay.currentLevelName;
+		levelEditor.selectedLevelName = gameplay.selectedLevelName;
+	}
+
+	void syncLevelFileNamesFromEditorToGameplay()
+	{
+		gameplay.currentLevelName = levelEditor.currentLevelName;
+		gameplay.selectedLevelName = levelEditor.selectedLevelName;
+	}
 }
 
 // Rebuilds shader binaries in development and reloads GPU shader objects.
@@ -123,7 +142,12 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		levelEditorMode = !levelEditorMode;
 		if (levelEditorMode)
 		{
+			syncLevelFileNamesFromGameplayToEditor();
 			levelEditor.enter(gameplay.room, renderer);
+		}
+		else
+		{
+			syncLevelFileNamesFromEditorToGameplay();
 		}
 	}
 
@@ -144,10 +168,12 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	{
 		levelEditor.update(deltaTime, renderInput, renderer, gameplay.room,
 			gameRenderWindow.contentHovered, gameRenderWindow.contentFocused);
+		syncLevelFileNamesFromEditorToGameplay();
 	}
 	else
 	{
 		gameplay.update(deltaTime, renderInput, renderer);
+		syncLevelFileNamesFromGameplayToEditor();
 	}
 
 	if (renderIntoWindow)

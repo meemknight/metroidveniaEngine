@@ -437,7 +437,7 @@ int main(int, char **)
 	#endif
 
 	window = SDL_CreateWindow(
-		"Mages Dungeon",
+		"Metroidvenia Engine",
 		1200, 900,
 		SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
 	);

@@ -1,6 +1,7 @@
 #include "Gameplay.h"
 #include "gameLayer.h"
 
+#include "RoomIo.h"
 #include "imguiTools.h"
 
 #include <algorithm>
@@ -14,12 +15,35 @@ namespace
 
 void Gameplay::init()
 {
-	createStarterRoom();
+	*this = {};
+
+	RoomFilesListing levelFiles = listRoomFiles();
+	if (!levelFiles.error.empty())
+	{
+		levelFileHasError = true;
+		levelFileMessage = levelFiles.error;
+		return;
+	}
+
+	if (!levelFiles.files.empty())
+	{
+		loadLevel(levelFiles.files.front().name.c_str());
+		return;
+	}
+
+	camera.zoom = tuning.cameraZoom;
+	levelFileMessage = "No levels found. Load one from Level Files to start playing.";
 }
 
 void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer)
 {
 	deltaTime = std::min(deltaTime, 0.05f);
+
+	if (currentLevelName.empty())
+	{
+		drawLevelFilesWindow();
+		return;
+	}
 
 	if (input.isButtonPressed(platform::Button::R))
 	{
@@ -49,6 +73,7 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 	drawGrid(renderer);
 	drawPlayer(renderer);
 	drawDebugWindow();
+	drawLevelFilesWindow();
 }
 
 void Gameplay::fillSolidRect(int minX, int minY, int maxX, int maxY)
@@ -95,6 +120,38 @@ void Gameplay::createStarterRoom()
 	spawnPoint = {14.f + kPlayerWidth * 0.5f, 32.f - kPlayerHeight * 0.5f};
 
 	respawnPlayer();
+	levelLoadRevision++;
+}
+
+void Gameplay::setDefaultSpawnPoint()
+{
+	// Until we add authored spawn markers, start near the top middle of the loaded room.
+	float minX = kPlayerWidth * 0.5f + 1.f;
+	float maxX = std::max(minX, room.size.x - kPlayerWidth * 0.5f - 1.f);
+	spawnPoint = {
+		std::clamp(room.size.x * 0.5f, minX, maxX),
+		kPlayerHeight * 0.5f + 1.f
+	};
+}
+
+void Gameplay::loadLevel(char const *levelName)
+{
+	Room loadedRoom = {};
+	RoomIoResult result = loadRoomFromFile(loadedRoom, levelName);
+	levelFileHasError = !result.success;
+	levelFileMessage = result.message;
+
+	if (!result.success)
+	{
+		return;
+	}
+
+	room = loadedRoom;
+	currentLevelName = result.levelName;
+	selectedLevelName = result.levelName;
+	setDefaultSpawnPoint();
+	respawnPlayer();
+	levelLoadRevision++;
 }
 
 void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpHeld)
@@ -285,6 +342,129 @@ void Gameplay::drawDebugWindow()
 			player.physics.upTouch ? 1 : 0,
 			player.physics.leftTouch ? 1 : 0,
 			player.physics.rightTouch ? 1 : 0);
+	}
+	ImGui::End();
+#endif
+}
+
+void Gameplay::drawLevelFilesWindow()
+{
+#if REMOVE_IMGUI == 0
+	if (!ImGui::isImguiWindowOpen())
+	{
+		return;
+	}
+
+	RoomFilesListing levelFiles = listRoomFiles();
+
+	bool selectedLevelStillExists = selectedLevelName.empty();
+	bool currentLevelStillExists = currentLevelName.empty();
+	for (auto const &file : levelFiles.files)
+	{
+		if (file.name == selectedLevelName)
+		{
+			selectedLevelStillExists = true;
+		}
+
+		if (file.name == currentLevelName)
+		{
+			currentLevelStillExists = true;
+		}
+	}
+
+	if (!selectedLevelStillExists)
+	{
+		selectedLevelName.clear();
+	}
+
+	if (!currentLevelStillExists)
+	{
+		currentLevelName.clear();
+		levelFileMessage = "The loaded level is no longer available. Load another level to continue.";
+		levelFileHasError = true;
+	}
+
+	if (selectedLevelName.empty() && !levelFiles.files.empty())
+	{
+		selectedLevelName = levelFiles.files.front().name;
+	}
+
+	ImGui::SetNextWindowBgAlpha(0.90f);
+	ImGui::SetNextWindowSize({380.f, 0.f}, ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin("Level Files"))
+	{
+		ImGui::Text("Current Level: %s", currentLevelName.empty() ? "None loaded" : currentLevelName.c_str());
+		if (currentLevelName.empty())
+		{
+			ImGui::TextUnformatted("Room Size: -");
+			ImGui::TextUnformatted("Load a saved level to start playing.");
+		}
+		else
+		{
+			ImGui::Text("Room Size: %d x %d", room.size.x, room.size.y);
+		}
+
+		ImGui::Separator();
+		ImGui::Text("Existing Levels (%d)", static_cast<int>(levelFiles.files.size()));
+		ImGui::TextColored({0.35f, 1.f, 0.55f, 1.f}, "Loaded level is shown in green");
+		if (!levelFiles.error.empty())
+		{
+			ImGui::TextColored({1.f, 0.45f, 0.35f, 1.f}, "%s", levelFiles.error.c_str());
+		}
+
+		if (ImGui::BeginChild("GameplayLevelFileList", {0.f, 220.f}, true))
+		{
+			for (auto const &file : levelFiles.files)
+			{
+				bool selected = file.name == selectedLevelName;
+				bool loaded = file.name == currentLevelName;
+				std::string label = file.name;
+				if (loaded)
+				{
+					label += "  [loaded]";
+					ImGui::PushStyleColor(ImGuiCol_Text, {0.35f, 1.f, 0.55f, 1.f});
+				}
+
+				if (ImGui::Selectable(label.c_str(), selected))
+				{
+					selectedLevelName = file.name;
+				}
+
+				if (loaded)
+				{
+					ImGui::PopStyleColor();
+				}
+			}
+		}
+		ImGui::EndChild();
+
+		bool canLoadSelected = !selectedLevelName.empty();
+		bool canReloadCurrent = !currentLevelName.empty();
+
+		if (!canLoadSelected) { ImGui::BeginDisabled(); }
+		if (ImGui::Button("Load Selected"))
+		{
+			loadLevel(selectedLevelName.c_str());
+		}
+		if (!canLoadSelected) { ImGui::EndDisabled(); }
+
+		if (!canReloadCurrent) { ImGui::BeginDisabled(); }
+		ImGui::SameLine();
+		if (ImGui::Button("Reload Current"))
+		{
+			loadLevel(currentLevelName.c_str());
+		}
+		if (!canReloadCurrent) { ImGui::EndDisabled(); }
+
+		if (!levelFileMessage.empty())
+		{
+			ImGui::Separator();
+			ImVec4 color = levelFileHasError
+				? ImVec4(1.f, 0.45f, 0.35f, 1.f)
+				: ImVec4(0.35f, 1.f, 0.55f, 1.f);
+			ImGui::TextColored(color, "%s", levelFileMessage.c_str());
+		}
 	}
 	ImGui::End();
 #endif

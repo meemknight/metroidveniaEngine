@@ -42,14 +42,25 @@ project(myGame)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 
-add_subdirectory(thirdparty/SDL-release-3.2.28)     # window opener (SDL3)
-add_subdirectory(thirdparty/stb_image)              # loading images
-add_subdirectory(thirdparty/stb_truetype)           # loading ttf files
-add_subdirectory(thirdparty/glm)                    # math
-add_subdirectory(thirdparty/imgui-docking)          # ui
-# add_subdirectory(thirdparty/raudio)					#audio
-add_subdirectory(thirdparty/magic_enum-0.9.3)
-add_subdirectory(thirdparty/FastNoiseSIMD)
+#add_subdirectory(thirdparty/SDL-release-3.2.28)     # window opener (SDL3)
+#add_subdirectory(thirdparty/stb_image)              # loading images
+#add_subdirectory(thirdparty/stb_truetype)           # loading ttf files
+#add_subdirectory(thirdparty/glm)                    # math
+#add_subdirectory(thirdparty/imgui-docking)          # ui
+## add_subdirectory(thirdparty/raudio)					#audio
+#add_subdirectory(thirdparty/magic_enum-0.9.3)
+#add_subdirectory(thirdparty/FastNoiseSIMD)
+#add_subdirectory(thirdparty/json-3.12.0)
+
+file(GLOB children RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty thirdparty/*)
+foreach(child ${children})
+	if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/${child})
+		if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/${child}/CMakeLists.txt)
+			add_subdirectory(thirdparty/${child})
+		endif()
+	endif()
+endforeach()
+
 
 # MY_SOURCES is defined to be a list of all the source files for my game
 # DON'T ADD THE SOURCES BY HAND, they are already added with this macro
@@ -103,6 +114,7 @@ target_link_libraries("${CMAKE_PROJECT_NAME}" PRIVATE
   # raudio
   magic_enum
   fastNoiseSIMD
+  nlohmann_json
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
