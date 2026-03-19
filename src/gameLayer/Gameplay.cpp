@@ -291,7 +291,7 @@ void Gameplay::drawDebugWindow()
 	ImGui::SetNextWindowBgAlpha(0.88f);
 	ImGui::SetNextWindowSize({320.f, 0.f}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin("Movement / Camera"))
+	if (ImGui::Begin("Editor"))
 	{
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 
@@ -394,6 +394,15 @@ void Gameplay::drawLevelFilesWindow()
 
 	if (ImGui::Begin("Level Files"))
 	{
+		ImGui::TextUnformatted("View");
+		ImGui::RadioButton("Game", true);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Level Editor", false))
+		{
+			requestLevelEditorMode = true;
+		}
+
+		ImGui::Separator();
 		ImGui::Text("Current Level: %s", currentLevelName.empty() ? "None loaded" : currentLevelName.c_str());
 		if (currentLevelName.empty())
 		{

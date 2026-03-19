@@ -628,7 +628,8 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 	ImGui::SetNextWindowBgAlpha(0.90f);
 	ImGui::SetNextWindowSize({380.f, 0.f}, ImGuiCond_FirstUseEver);
 
-	if (ImGui::Begin("Level Editor"))
+	//level editor
+	if (ImGui::Begin("Editor"))
 	{
 		bool hasLoadedLevel = !currentLevelName.empty();
 
@@ -896,6 +897,15 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 
 	if (ImGui::Begin("Level Files"))
 	{
+		ImGui::TextUnformatted("View");
+		if (ImGui::RadioButton("Game", false))
+		{
+			requestGameplayMode = true;
+		}
+		ImGui::SameLine();
+		ImGui::RadioButton("Level Editor", true);
+
+		ImGui::Separator();
 		ImGui::Text("Folder: %s", getRoomFilesFolder().c_str());
 		if (currentLevelName.empty())
 		{

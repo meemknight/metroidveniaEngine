@@ -93,6 +93,7 @@ struct LevelEditor
 	bool fileActionHasError = false;
 	bool levelDirty = false;
 	int pendingFileAction = noPendingFileAction;
+	bool requestGameplayMode = false;
 	char newLevelName[128] = {};
 	char renameName[128] = {};
 	glm::ivec2 newLevelSize = {40, 24};

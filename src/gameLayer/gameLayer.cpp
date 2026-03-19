@@ -20,6 +20,26 @@ namespace
 	bool levelEditorMode = false;
 	int syncedGameplayLevelLoadRevision = -1;
 
+	void syncLevelFileNamesFromGameplayToEditor();
+	void syncLevelFileNamesFromEditorToGameplay();
+
+	void switchToLevelEditorMode()
+	{
+		levelEditorMode = true;
+		gameplay.requestLevelEditorMode = false;
+		levelEditor.requestGameplayMode = false;
+		syncLevelFileNamesFromGameplayToEditor();
+		levelEditor.enter(gameplay.room, renderer);
+	}
+
+	void switchToGameplayMode()
+	{
+		levelEditorMode = false;
+		gameplay.requestLevelEditorMode = false;
+		levelEditor.requestGameplayMode = false;
+		syncLevelFileNamesFromEditorToGameplay();
+	}
+
 	void syncLevelFileNamesFromGameplayToEditor()
 	{
 		if (syncedGameplayLevelLoadRevision != gameplay.levelLoadRevision)
@@ -139,16 +159,8 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 
 	if (input.isButtonPressed(platform::Button::F6))
 	{
-		levelEditorMode = !levelEditorMode;
-		if (levelEditorMode)
-		{
-			syncLevelFileNamesFromGameplayToEditor();
-			levelEditor.enter(gameplay.room, renderer);
-		}
-		else
-		{
-			syncLevelFileNamesFromEditorToGameplay();
-		}
+		if (levelEditorMode) { switchToGameplayMode(); }
+		else { switchToLevelEditorMode(); }
 	}
 
 	if (renderIntoWindow)
@@ -169,11 +181,19 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		levelEditor.update(deltaTime, renderInput, renderer, gameplay.room,
 			gameRenderWindow.contentHovered, gameRenderWindow.contentFocused);
 		syncLevelFileNamesFromEditorToGameplay();
+		if (levelEditor.requestGameplayMode)
+		{
+			switchToGameplayMode();
+		}
 	}
 	else
 	{
 		gameplay.update(deltaTime, renderInput, renderer);
 		syncLevelFileNamesFromGameplayToEditor();
+		if (gameplay.requestLevelEditorMode)
+		{
+			switchToLevelEditorMode();
+		}
 	}
 
 	if (renderIntoWindow)
