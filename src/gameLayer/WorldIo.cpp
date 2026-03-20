@@ -195,6 +195,95 @@ WorldIoResult saveWorldData(WorldData const &world)
 	return result;
 }
 
+WorldIoResult renameLevelReferencesInWorld(char const *oldLevelName, char const *newLevelName)
+{
+	WorldIoResult result = {};
+
+	std::string oldLevelNameText = oldLevelName ? oldLevelName : "";
+	std::string newLevelNameText = newLevelName ? newLevelName : "";
+
+	if (oldLevelNameText.empty() || newLevelNameText.empty())
+	{
+		result.message = "Level rename sync needs valid level names";
+		return result;
+	}
+
+	if (oldLevelNameText == newLevelNameText)
+	{
+		result.success = true;
+		result.message = "Level references already match";
+		return result;
+	}
+
+	try
+	{
+		fs::create_directories(getWorldFolderPath());
+		if (!fs::exists(getWorldJsonPath()))
+		{
+			result.success = true;
+			result.message = "No world file yet";
+			return result;
+		}
+
+		WorldData world = {};
+		result = loadWorldData(world);
+		if (!result.success)
+		{
+			return result;
+		}
+
+		bool changed = false;
+
+		auto renamedLevel = world.levels.find(oldLevelNameText);
+		if (renamedLevel != world.levels.end())
+		{
+			if (world.levels.find(newLevelNameText) != world.levels.end())
+			{
+				result.message = "World already has a level with the renamed name";
+				return result;
+			}
+
+			WorldLevelPlacement movedPlacement = renamedLevel->second;
+			movedPlacement.name = newLevelNameText;
+			world.levels.erase(renamedLevel);
+			world.levels[newLevelNameText] = movedPlacement;
+			changed = true;
+		}
+
+		for (auto &levelIt : world.levels)
+		{
+			for (auto &doorLinkIt : levelIt.second.doorLinks)
+			{
+				WorldDoorLink &doorLink = doorLinkIt.second;
+				if (doorLink.levelName == oldLevelNameText)
+				{
+					doorLink.levelName = newLevelNameText;
+					changed = true;
+				}
+			}
+		}
+
+		if (!changed)
+		{
+			result.success = true;
+			result.message = "World had no matching level references";
+			return result;
+		}
+
+		result = saveWorldData(world);
+		if (result.success)
+		{
+			result.message = "Updated world level references";
+		}
+	}
+	catch (std::exception const &e)
+	{
+		result.message = e.what();
+	}
+
+	return result;
+}
+
 WorldIoResult renameDoorReferencesInWorld(char const *levelName, char const *oldDoorName, char const *newDoorName)
 {
 	WorldIoResult result = {};
@@ -274,6 +363,82 @@ WorldIoResult renameDoorReferencesInWorld(char const *levelName, char const *old
 		if (result.success)
 		{
 			result.message = "Updated world door references";
+		}
+	}
+	catch (std::exception const &e)
+	{
+		result.message = e.what();
+	}
+
+	return result;
+}
+
+WorldIoResult deleteDoorReferencesInWorld(char const *levelName, char const *doorName)
+{
+	WorldIoResult result = {};
+
+	std::string levelNameText = levelName ? levelName : "";
+	std::string doorNameText = doorName ? doorName : "";
+
+	if (levelNameText.empty() || doorNameText.empty())
+	{
+		result.message = "Door delete sync needs a valid level and door name";
+		return result;
+	}
+
+	try
+	{
+		fs::create_directories(getWorldFolderPath());
+		if (!fs::exists(getWorldJsonPath()))
+		{
+			result.success = true;
+			result.message = "No world file yet";
+			return result;
+		}
+
+		WorldData world = {};
+		result = loadWorldData(world);
+		if (!result.success)
+		{
+			return result;
+		}
+
+		bool changed = false;
+
+		auto deletedLevel = world.levels.find(levelNameText);
+		if (deletedLevel != world.levels.end())
+		{
+			changed |= deletedLevel->second.doorLinks.erase(doorNameText) > 0;
+		}
+
+		for (auto &levelIt : world.levels)
+		{
+			for (auto linkIt = levelIt.second.doorLinks.begin(); linkIt != levelIt.second.doorLinks.end(); )
+			{
+				if (linkIt->second.levelName == levelNameText &&
+					linkIt->second.doorName == doorNameText)
+				{
+					linkIt = levelIt.second.doorLinks.erase(linkIt);
+					changed = true;
+				}
+				else
+				{
+					++linkIt;
+				}
+			}
+		}
+
+		if (!changed)
+		{
+			result.success = true;
+			result.message = "World had no matching door references";
+			return result;
+		}
+
+		result = saveWorldData(world);
+		if (result.success)
+		{
+			result.message = "Removed world door references";
 		}
 	}
 	catch (std::exception const &e)

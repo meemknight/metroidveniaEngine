@@ -31,6 +31,15 @@ namespace
 		return a.levelName == b.levelName && a.doorName == b.doorName;
 	}
 
+	bool rectsOverlap(glm::vec4 a, glm::vec4 b)
+	{
+		return
+			a.x < b.x + b.z &&
+			a.x + a.z > b.x &&
+			a.y < b.y + b.w &&
+			a.y + a.w > b.y;
+	}
+
 	std::string makeDoorReferenceKey(WorldEditor::DoorReference const &doorRef)
 	{
 		return doorRef.levelName + "::" + doorRef.doorName;
@@ -75,6 +84,26 @@ namespace
 		}
 		std::sort(names.begin(), names.end());
 		return names;
+	}
+
+	std::string makeDuplicateLevelName(std::string const &baseName)
+	{
+		std::string prefix = baseName;
+		if (prefix.empty())
+		{
+			prefix = "level";
+		}
+
+		for (int index = 2; index < 100000; index++)
+		{
+			std::string candidate = prefix + " " + std::to_string(index);
+			if (!roomFileExists(candidate.c_str()))
+			{
+				return candidate;
+			}
+		}
+
+		return prefix + " copy";
 	}
 
 #if REMOVE_IMGUI == 0
@@ -271,12 +300,45 @@ void WorldEditor::focusPlacedLevel(std::string const &levelName, gl2d::Renderer2
 		return;
 	}
 
-	selectedPlacedLevelName = levelName;
+	selectPlacedLevel(levelName);
 	selectedLevelName = levelName;
 
 	glm::vec4 rect = found->second.getRect();
 	setViewCenter({rect.x + rect.z * 0.5f, rect.y + rect.w * 0.5f}, renderer);
 	clampCamera(renderer);
+}
+
+void WorldEditor::clearPlacedLevelSelection()
+{
+	selectedPlacedLevelName.clear();
+	selectedPlacedLevels.clear();
+}
+
+void WorldEditor::selectPlacedLevel(std::string const &levelName)
+{
+	clearPlacedLevelSelection();
+	if (levelName.empty())
+	{
+		return;
+	}
+
+	selectedPlacedLevelName = levelName;
+	selectedPlacedLevels.insert(levelName);
+}
+
+bool WorldEditor::isPlacedLevelSelected(std::string const &levelName) const
+{
+	return selectedPlacedLevels.find(levelName) != selectedPlacedLevels.end();
+}
+
+glm::vec4 WorldEditor::getSelectionRect() const
+{
+	float minX = std::min(selectionDragStart.x, selectionDragEnd.x);
+	float minY = std::min(selectionDragStart.y, selectionDragEnd.y);
+	float maxX = std::max(selectionDragStart.x, selectionDragEnd.x);
+	float maxY = std::max(selectionDragStart.y, selectionDragEnd.y);
+
+	return {minX, minY, maxX - minX, maxY - minY};
 }
 
 void WorldEditor::ensureBoundsForPlacement(WorldLevelPlacement const &placement)
@@ -393,13 +455,34 @@ void WorldEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 
 void WorldEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
 {
-	(void)gameViewFocused;
-
 	if (input.isButtonPressed(platform::Button::Escape))
 	{
 		dragActive = false;
+		selectionPressActive = false;
+		selectionDragActive = false;
+		dragStartPositions.clear();
+		dragAnchorLevelName.clear();
 		clearPendingDoorLink();
 	}
+
+#if REMOVE_IMGUI == 0
+	bool allowTabShortcut = !worldEditorModalPopupOpen();
+	if (allowTabShortcut)
+	{
+		ImGuiIO &io = ImGui::GetIO();
+		allowTabShortcut = gameViewFocused || (!io.WantTextInput && !ImGui::IsAnyItemActive());
+	}
+
+	if (allowTabShortcut && input.isButtonPressed(platform::Button::Tab))
+	{
+		requestLoadedLevelEditorMode = true;
+	}
+#else
+	if (input.isButtonPressed(platform::Button::Tab))
+	{
+		requestLoadedLevelEditorMode = true;
+	}
+#endif
 
 	bool saveShortcut =
 		input.isButtonHeld(platform::Button::LeftCtrl) &&
@@ -407,6 +490,14 @@ void WorldEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
 	if (saveShortcut)
 	{
 		saveWorld();
+	}
+
+	bool duplicateShortcut =
+		input.isButtonHeld(platform::Button::LeftCtrl) &&
+		input.isButtonPressed(platform::Button::D);
+	if (duplicateShortcut)
+	{
+		duplicateSelectedLevel();
 	}
 }
 
@@ -424,6 +515,8 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 
 	if (pendingDoorLinkPick)
 	{
+		selectionPressActive = false;
+		selectionDragActive = false;
 		pendingLinkHoveredDoor = getPlacedDoorAt(mouseWorld);
 		if (doorReferencesMatch(pendingLinkHoveredDoor, pendingLinkSourceDoor))
 		{
@@ -477,24 +570,128 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 		if (!input.isLMouseHeld() || !input.isButtonHeld(platform::Button::LeftCtrl))
 		{
 			dragActive = false;
+			dragStartPositions.clear();
+			dragAnchorLevelName.clear();
 			return;
 		}
 
-		auto found = world.levels.find(selectedPlacedLevelName);
-		if (found == world.levels.end())
+		auto anchorStart = dragStartPositions.find(dragAnchorLevelName);
+		if (anchorStart == dragStartPositions.end())
 		{
 			dragActive = false;
+			dragStartPositions.clear();
+			dragAnchorLevelName.clear();
 			return;
 		}
 
-		glm::vec2 newPosition = mouseWorld - dragGrabOffset;
-		if (found->second.position != newPosition)
+		glm::vec2 anchorPosition = mouseWorld - dragGrabOffset;
+		glm::vec2 dragDelta = anchorPosition - anchorStart->second;
+		bool movedAny = false;
+
+		for (auto const &dragIt : dragStartPositions)
 		{
-			found->second.position = newPosition;
-			ensureBoundsForPlacement(found->second);
+			auto found = world.levels.find(dragIt.first);
+			if (found == world.levels.end())
+			{
+				continue;
+			}
+
+			glm::vec2 newPosition = dragIt.second + dragDelta;
+			if (found->second.position != newPosition)
+			{
+				found->second.position = newPosition;
+				ensureBoundsForPlacement(found->second);
+				movedAny = true;
+			}
+		}
+
+		if (movedAny)
+		{
 			worldDirty = true;
 		}
 		return;
+	}
+
+	if (selectionPressActive)
+	{
+		if (input.isLMouseHeld())
+		{
+			glm::vec2 mouseScreen = {static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)};
+			float dragDistance = glm::length(mouseScreen - selectionPressStartScreen);
+			if (selectionDragActive || dragDistance >= 8.f)
+			{
+				selectionDragActive = true;
+				selectionDragEnd = mouseWorld;
+			}
+
+			return;
+		}
+
+		if (input.isLMouseReleased())
+		{
+			bool finishedSelectionDrag = selectionDragActive;
+			std::string pressedLevelName = selectionPressedLevelName;
+			selectionPressActive = false;
+			selectionDragActive = false;
+			selectionPressedLevelName.clear();
+
+			if (finishedSelectionDrag)
+			{
+				glm::vec4 selectionRect = getSelectionRect();
+				clearSelectedDoor();
+				clearPlacedLevelSelection();
+				selectedLevelName.clear();
+				lastClickedPlacedLevelName.clear();
+				placedLevelDoubleClickTimer = 0.f;
+
+				for (auto const &name : getSortedPlacedLevelNames(world))
+				{
+					glm::vec4 rect = world.levels.at(name).getRect();
+					if (rectsOverlap(selectionRect, rect))
+					{
+						selectedPlacedLevels.insert(name);
+						if (selectedPlacedLevelName.empty())
+						{
+							selectedPlacedLevelName = name;
+						}
+					}
+				}
+
+				if (!selectedPlacedLevelName.empty())
+				{
+					selectedLevelName = selectedPlacedLevelName;
+				}
+
+				return;
+			}
+
+			if (pressedLevelName.empty())
+			{
+				clearSelectedDoor();
+				clearPlacedLevelSelection();
+				selectedLevelName.clear();
+				lastClickedPlacedLevelName.clear();
+				placedLevelDoubleClickTimer = 0.f;
+				return;
+			}
+
+			selectPlacedLevel(pressedLevelName);
+			selectedLevelName = pressedLevelName;
+			selectedDoor = {};
+
+			if (lastClickedPlacedLevelName == pressedLevelName && placedLevelDoubleClickTimer > 0.f)
+			{
+				clearPendingDoorLink();
+				requestLevelEditorMode = true;
+				lastClickedPlacedLevelName.clear();
+				placedLevelDoubleClickTimer = 0.f;
+				return;
+			}
+
+			lastClickedPlacedLevelName = pressedLevelName;
+			placedLevelDoubleClickTimer = kPlacedLevelDoubleClickTime;
+			return;
+		}
 	}
 
 	if (!input.isLMousePressed())
@@ -515,37 +712,36 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 	}
 
 	std::string hoveredLevel = getPlacedLevelAt(mouseWorld);
-	if (hoveredLevel.empty())
+	if (input.isButtonHeld(platform::Button::LeftCtrl) && !hoveredLevel.empty())
 	{
 		clearSelectedDoor();
-		selectedPlacedLevelName.clear();
-		lastClickedPlacedLevelName.clear();
-		placedLevelDoubleClickTimer = 0.f;
-		return;
-	}
+		if (!isPlacedLevelSelected(hoveredLevel))
+		{
+			selectPlacedLevel(hoveredLevel);
+			selectedLevelName = hoveredLevel;
+		}
 
-	selectedPlacedLevelName = hoveredLevel;
-	selectedLevelName = hoveredLevel;
-	selectedDoor = {};
-
-	if (lastClickedPlacedLevelName == hoveredLevel && placedLevelDoubleClickTimer > 0.f)
-	{
-		dragActive = false;
-		clearPendingDoorLink();
-		requestLevelEditorMode = true;
-		lastClickedPlacedLevelName.clear();
-		placedLevelDoubleClickTimer = 0.f;
-		return;
-	}
-
-	lastClickedPlacedLevelName = hoveredLevel;
-	placedLevelDoubleClickTimer = kPlacedLevelDoubleClickTime;
-
-	if (input.isButtonHeld(platform::Button::LeftCtrl))
-	{
 		dragActive = true;
+		dragAnchorLevelName = hoveredLevel;
 		dragGrabOffset = mouseWorld - world.levels[hoveredLevel].position;
+		dragStartPositions.clear();
+		for (auto const &name : selectedPlacedLevels)
+		{
+			auto found = world.levels.find(name);
+			if (found != world.levels.end())
+			{
+				dragStartPositions[name] = found->second.position;
+			}
+		}
+		return;
 	}
+
+	selectionPressActive = true;
+	selectionDragActive = false;
+	selectionPressStartScreen = {static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)};
+	selectionDragStart = mouseWorld;
+	selectionDragEnd = mouseWorld;
+	selectionPressedLevelName = hoveredLevel;
 }
 
 void WorldEditor::selectDoor(DoorReference const &doorRef)
@@ -557,7 +753,7 @@ void WorldEditor::selectDoor(DoorReference const &doorRef)
 	}
 
 	selectedDoor = doorRef;
-	selectedPlacedLevelName = doorRef.levelName;
+	selectPlacedLevel(doorRef.levelName);
 	selectedLevelName = doorRef.levelName;
 }
 
@@ -876,13 +1072,18 @@ void WorldEditor::loadWorld()
 	worldHasError = !result.success;
 	worldMessage = result.message;
 	worldDirty = false;
-	selectedPlacedLevelName.clear();
+	clearPlacedLevelSelection();
 	selectedDoor = {};
 	pendingLinkSourceDoor = {};
 	pendingLinkHoveredDoor = {};
 	pendingDoorLinkPick = false;
 	pendingDoorLinkDragActive = false;
 	pendingDoorLinkPreviewPoint = {};
+	selectionPressActive = false;
+	selectionDragActive = false;
+	dragActive = false;
+	dragStartPositions.clear();
+	dragAnchorLevelName.clear();
 	refreshPlacementSizesFromRooms();
 
 	for (auto const &it : world.levels)
@@ -1048,7 +1249,7 @@ void WorldEditor::spawnSelectedLevel(gl2d::Renderer2D &renderer)
 	{
 		worldHasError = true;
 		worldMessage = "That level is already in the world";
-		selectedPlacedLevelName = selectedLevelName;
+		selectPlacedLevel(selectedLevelName);
 		return;
 	}
 
@@ -1069,11 +1270,64 @@ void WorldEditor::spawnSelectedLevel(gl2d::Renderer2D &renderer)
 
 	world.levels[placement.name] = placement;
 	selectedLevelName = placement.name;
-	selectedPlacedLevelName = placement.name;
+	selectPlacedLevel(placement.name);
+	selectedDoor = {};
 	ensureBoundsForPlacement(placement);
 	worldDirty = true;
 	worldHasError = false;
 	worldMessage = "Spawned level into world";
+	pendingPreviewRefreshLevelName = placement.name;
+}
+
+void WorldEditor::duplicateSelectedLevel()
+{
+	if (selectedPlacedLevels.size() != 1 || selectedPlacedLevelName.empty())
+	{
+		worldHasError = true;
+		worldMessage = "Select exactly one placed level to duplicate";
+		return;
+	}
+
+	auto selectedPlacement = world.levels.find(selectedPlacedLevelName);
+	if (selectedPlacement == world.levels.end())
+	{
+		worldHasError = true;
+		worldMessage = "That level is no longer placed in the world";
+		return;
+	}
+
+	// Duplicating a placed room creates a brand-new level file. Door links stay in world.json.
+	Room room = {};
+	RoomIoResult loadResult = loadRoomFromFile(room, selectedPlacedLevelName.c_str());
+	worldHasError = !loadResult.success;
+	worldMessage = loadResult.message;
+	if (!loadResult.success)
+	{
+		return;
+	}
+
+	std::string duplicateName = makeDuplicateLevelName(loadResult.levelName);
+	RoomIoResult saveResult = saveRoomToFile(room, duplicateName.c_str());
+	worldHasError = !saveResult.success;
+	worldMessage = saveResult.message;
+	if (!saveResult.success)
+	{
+		return;
+	}
+
+	WorldLevelPlacement placement = {};
+	placement.name = saveResult.levelName;
+	placement.size = room.size;
+	placement.position = selectedPlacement->second.position + glm::vec2(-4.f, -4.f);
+
+	world.levels[placement.name] = placement;
+	selectedLevelName = placement.name;
+	selectPlacedLevel(placement.name);
+	selectedDoor = {};
+	ensureBoundsForPlacement(placement);
+	worldDirty = true;
+	worldHasError = false;
+	worldMessage = "Duplicated level";
 	pendingPreviewRefreshLevelName = placement.name;
 }
 
@@ -1088,6 +1342,22 @@ std::string WorldEditor::getPlacedLevelAt(glm::vec2 worldPoint)
 			found->second.getRect().y + found->second.getRect().w >= worldPoint.y)
 		{
 			return selectedPlacedLevelName;
+		}
+	}
+
+	for (auto const &name : selectedPlacedLevels)
+	{
+		auto found = world.levels.find(name);
+		if (found == world.levels.end())
+		{
+			continue;
+		}
+
+		glm::vec4 rect = found->second.getRect();
+		if (rect.x <= worldPoint.x && rect.y <= worldPoint.y &&
+			rect.x + rect.z >= worldPoint.x && rect.y + rect.w >= worldPoint.y)
+		{
+			return name;
 		}
 	}
 
@@ -1147,15 +1417,20 @@ void WorldEditor::drawLevels(gl2d::Renderer2D &renderer)
 	for (auto const &name : getSortedPlacedLevelNames(world))
 	{
 		auto const &placement = world.levels.at(name);
-		bool selected = name == selectedPlacedLevelName;
+		bool selected = isPlacedLevelSelected(name);
+		bool primarySelected = name == selectedPlacedLevelName;
 		auto preview = levelPreviews.find(name);
 
-		gl2d::Color4f fillColor = selected
+		gl2d::Color4f fillColor = primarySelected
 			? gl2d::Color4f{0.18f, 0.52f, 1.0f, 0.28f}
-			: gl2d::Color4f{0.22f, 0.30f, 0.42f, 0.24f};
-		gl2d::Color4f outlineColor = selected
+			: (selected
+				? gl2d::Color4f{0.20f, 0.48f, 0.95f, 0.20f}
+				: gl2d::Color4f{0.22f, 0.30f, 0.42f, 0.24f});
+		gl2d::Color4f outlineColor = primarySelected
 			? gl2d::Color4f{0.25f, 0.70f, 1.0f, 1.f}
-			: gl2d::Color4f{0.80f, 0.86f, 0.94f, 0.95f};
+			: (selected
+				? gl2d::Color4f{0.32f, 0.78f, 1.0f, 0.96f}
+				: gl2d::Color4f{0.80f, 0.86f, 0.94f, 0.95f});
 
 		if (preview != levelPreviews.end() && preview->second.frameBuffer.texture.isValid())
 		{
@@ -1174,6 +1449,13 @@ void WorldEditor::drawLevels(gl2d::Renderer2D &renderer)
 		}
 
 		renderer.renderRectangleOutline(placement.getRect(), outlineColor, 1.0f);
+	}
+
+	if (selectionDragActive)
+	{
+		glm::vec4 selectionRect = getSelectionRect();
+		renderer.renderRectangle(selectionRect, {0.22f, 0.64f, 1.0f, 0.12f});
+		renderer.renderRectangleOutline(selectionRect, {0.30f, 0.78f, 1.0f, 0.95f}, 0.35f);
 	}
 }
 
@@ -1371,7 +1653,9 @@ void WorldEditor::drawLevelLabels(gl2d::Renderer2D &renderer)
 
 		gl2d::Color4f color = name == selectedPlacedLevelName
 			? gl2d::Color4f{0.98f, 0.96f, 0.50f, 1.f}
-			: gl2d::Color4f{0.90f, 0.94f, 0.98f, 1.f};
+			: (isPlacedLevelSelected(name)
+				? gl2d::Color4f{0.72f, 0.92f, 1.0f, 1.f}
+				: gl2d::Color4f{0.90f, 0.94f, 0.98f, 1.f});
 
 		renderer.renderText(
 			screenPos,
@@ -1409,10 +1693,14 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
+		ImGui::TextUnformatted("` toggles back to gameplay");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
+		ImGui::TextUnformatted("Tab returns to the previously loaded level");
 		ImGui::TextUnformatted("Click a level or door to select it");
-		ImGui::TextUnformatted("Ctrl+drag a level to move it");
+		ImGui::TextUnformatted("Drag empty space to box-select levels");
+		ImGui::TextUnformatted("Ctrl+drag a selected level to move the whole selection");
 		ImGui::TextUnformatted("Drag from a door onto another door to relink it");
+		ImGui::TextUnformatted("Ctrl+D duplicates the selected placed level");
 		ImGui::TextUnformatted("Ctrl+S saves world.json");
 
 		ImGui::Separator();
@@ -1499,6 +1787,10 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 				worldMessage = "Unlinked door";
 			}
 			if (!canUnlink) { ImGui::EndDisabled(); }
+		}
+		else if (selectedPlacedLevels.size() > 1)
+		{
+			ImGui::TextUnformatted("Multiple levels selected");
 		}
 		else if (!selectedPlacedLevelName.empty() && world.levels.find(selectedPlacedLevelName) != world.levels.end())
 		{

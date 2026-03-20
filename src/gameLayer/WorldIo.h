@@ -42,4 +42,6 @@ struct WorldIoResult
 std::string getWorldFilePath();
 WorldIoResult loadWorldData(WorldData &world);
 WorldIoResult saveWorldData(WorldData const &world);
+WorldIoResult renameLevelReferencesInWorld(char const *oldLevelName, char const *newLevelName);
 WorldIoResult renameDoorReferencesInWorld(char const *levelName, char const *oldDoorName, char const *newDoorName);
+WorldIoResult deleteDoorReferencesInWorld(char const *levelName, char const *doorName);

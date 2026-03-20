@@ -45,6 +45,7 @@ namespace
 	WorldEditor worldEditor;
 	GameRenderWindow gameRenderWindow;
 	int runtimeMode = gameplayMode;
+	int lastEditorMode = levelEditorMode;
 	int syncedGameplayLevelLoadRevision = -1;
 	bool levelEditorLoaded = false;
 	bool worldEditorLoaded = false;
@@ -80,6 +81,7 @@ namespace
 		levelEditor.requestWorldEditorMode = false;
 		worldEditor.requestGameplayMode = false;
 		worldEditor.requestLevelEditorMode = false;
+		worldEditor.requestLoadedLevelEditorMode = false;
 	}
 
 	void syncLevelFileNamesFromGameplayToEditor()
@@ -238,11 +240,13 @@ namespace
 		}
 		else if (runtimeMode == levelEditorMode)
 		{
+			lastEditorMode = levelEditorMode;
 			syncLevelFileNamesFromEditorToGameplay();
 			unloadLevelEditor();
 		}
 		else if (runtimeMode == worldEditorMode)
 		{
+			lastEditorMode = worldEditorMode;
 			syncLevelSelectionFromWorldEditor();
 			unloadWorldEditor();
 		}
@@ -527,6 +531,17 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	{
 		requestModeSwitch(worldEditorMode);
 	}
+	else if (!blockingModeSwitchPopup && input.isButtonPressed(platform::Button::Grave))
+	{
+		if (runtimeMode == gameplayMode)
+		{
+			requestModeSwitch(lastEditorMode);
+		}
+		else
+		{
+			requestModeSwitch(gameplayMode);
+		}
+	}
 
 	applyQueuedModeSwitch();
 
@@ -561,14 +576,23 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	{
 		worldEditor.update(deltaTime, renderInput, renderer,
 			gameRenderWindow.contentHovered, gameRenderWindow.contentFocused);
-		syncLevelSelectionFromWorldEditor();
 		if (worldEditor.requestGameplayMode)
 		{
+			syncLevelSelectionFromWorldEditor();
 			requestModeSwitch(gameplayMode);
+		}
+		else if (worldEditor.requestLoadedLevelEditorMode)
+		{
+			requestModeSwitch(levelEditorMode);
 		}
 		else if (worldEditor.requestLevelEditorMode)
 		{
+			syncLevelSelectionFromWorldEditor();
 			requestModeSwitch(levelEditorMode);
+		}
+		else
+		{
+			syncLevelSelectionFromWorldEditor();
 		}
 	}
 	else

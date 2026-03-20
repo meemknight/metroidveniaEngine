@@ -27,6 +27,7 @@ namespace platform
 			Right,
 			LeftCtrl,
 			Tab,
+			Grave,
 			LeftShift,
 			LeftAlt,
 			F1,

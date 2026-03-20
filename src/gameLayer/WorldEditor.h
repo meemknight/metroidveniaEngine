@@ -7,6 +7,7 @@
 #include <platformInput.h>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // World editor for arranging multiple room files inside one larger virtual map.
@@ -48,6 +49,10 @@ struct WorldEditor
 	glm::vec2 worldToScreen(glm::vec2 worldPos, gl2d::Renderer2D &renderer);
 	void focusWorld(gl2d::Renderer2D &renderer);
 	void focusPlacedLevel(std::string const &levelName, gl2d::Renderer2D &renderer);
+	void clearPlacedLevelSelection();
+	void selectPlacedLevel(std::string const &levelName);
+	bool isPlacedLevelSelected(std::string const &levelName) const;
+	glm::vec4 getSelectionRect() const;
 	void ensureBoundsForPlacement(WorldLevelPlacement const &placement);
 	void clampCamera(gl2d::Renderer2D &renderer);
 	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer);
@@ -74,6 +79,7 @@ struct WorldEditor
 	void refreshLevelPreview(std::string const &levelName, gl2d::Renderer2D &renderer);
 	void refreshAllLevelPreviews(gl2d::Renderer2D &renderer);
 	void spawnSelectedLevel(gl2d::Renderer2D &renderer);
+	void duplicateSelectedLevel();
 	std::string getPlacedLevelAt(glm::vec2 worldPoint);
 	void drawWorld(gl2d::Renderer2D &renderer);
 	void drawGrid(gl2d::Renderer2D &renderer);
@@ -92,6 +98,7 @@ struct WorldEditor
 
 	std::string selectedLevelName = {};
 	std::string selectedPlacedLevelName = {};
+	std::unordered_set<std::string> selectedPlacedLevels = {};
 	DoorReference selectedDoor = {};
 	DoorReference pendingLinkSourceDoor = {};
 	DoorReference pendingLinkHoveredDoor = {};
@@ -102,13 +109,23 @@ struct WorldEditor
 	bool pendingDiscardChanges = false;
 	bool cameraInitialized = false;
 	bool dragActive = false;
+	bool selectionPressActive = false;
+	bool selectionDragActive = false;
 	float placedLevelDoubleClickTimer = 0.f;
 	bool pendingDoorLinkPick = false;
 	bool pendingDoorLinkDragActive = false;
 	glm::vec2 dragGrabOffset = {};
+	// Box selection and grouped room dragging share these temporary interaction fields.
+	glm::vec2 selectionPressStartScreen = {};
+	glm::vec2 selectionDragStart = {};
+	glm::vec2 selectionDragEnd = {};
 	glm::vec2 pendingDoorLinkPreviewPoint = {};
+	std::unordered_map<std::string, glm::vec2> dragStartPositions = {};
+	std::string dragAnchorLevelName = {};
+	std::string selectionPressedLevelName = {};
 	std::string lastClickedPlacedLevelName = {};
 
 	bool requestGameplayMode = false;
 	bool requestLevelEditorMode = false;
+	bool requestLoadedLevelEditorMode = false;
 };

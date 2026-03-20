@@ -18,6 +18,7 @@ struct LevelEditor
 		rectTool,
 		measureTool,
 		doorTool,
+		moveTool,
 	};
 
 	struct EditorTuning
@@ -42,6 +43,19 @@ struct LevelEditor
 		std::string newName = {};
 	};
 
+	// The move tool keeps a detached snapshot of solid blocks and only writes it back on Enter.
+	struct MoveSelection
+	{
+		bool active = false;
+		bool previewActive = false;
+		bool dragging = false;
+		glm::ivec2 sourceStart = {};
+		glm::ivec2 size = {};
+		glm::ivec2 previewPosition = {};
+		glm::ivec2 dragGrabOffset = {};
+		std::vector<char> solidMask = {};
+	};
+
 	void init();
 	void cleanup();
 	void enter(Room &room, gl2d::Renderer2D &renderer);
@@ -63,6 +77,11 @@ struct LevelEditor
 	void resizeRoom(Room &room, int newSizeX, int newSizeY);
 	glm::vec4 getRectPreview(glm::ivec2 a, glm::ivec2 b);
 	glm::vec2 worldToScreen(glm::vec2 worldPos, gl2d::Renderer2D &renderer);
+	void clearMoveSelection();
+	void createMoveSelection(Room &room, glm::ivec2 a, glm::ivec2 b);
+	bool moveSelectionContainsTile(glm::ivec2 tile) const;
+	bool moveSelectionPreviewContainsTile(glm::ivec2 tile) const;
+	void commitMoveSelection(Room &room);
 	void clearDoorSelection();
 	int getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld);
 	int getHoveredDoorSpawnIndex(Room &room, glm::vec2 mouseWorld);
@@ -72,6 +91,7 @@ struct LevelEditor
 	void createDoorAtHoveredTile(Room &room);
 	void moveSelectedDoor(Room &room, glm::ivec2 position);
 	void resizeSelectedDoor(Room &room, glm::ivec2 size);
+	void requestDeleteSelectedDoor(Room &room);
 	void deleteSelectedDoor(Room &room);
 	void syncSelectedDoorBuffer(Room &room);
 	void applySelectedDoorName(Room &room);
@@ -80,6 +100,7 @@ struct LevelEditor
 	void clampCamera(Room &room, gl2d::Renderer2D &renderer);
 	void drawRoom(Room &room, gl2d::Renderer2D &renderer);
 	void drawGrid(Room &room, gl2d::Renderer2D &renderer);
+	void drawMoveSelection(gl2d::Renderer2D &renderer);
 	void drawDoors(Room &room, gl2d::Renderer2D &renderer);
 	void drawHoveredTile(gl2d::Renderer2D &renderer);
 	void drawRectPreview(gl2d::Renderer2D &renderer);
@@ -106,6 +127,7 @@ struct LevelEditor
 	bool rectDragPlacesSolid = true;
 	glm::ivec2 rectDragStart = {};
 	glm::ivec2 rectDragEnd = {};
+	MoveSelection moveSelection = {};
 	int selectedDoorIndex = -1;
 	bool doorDragActive = false;
 	bool doorResizeActive = false;
@@ -131,8 +153,11 @@ struct LevelEditor
 	char newLevelName[128] = {};
 	char renameName[128] = {};
 	char selectedDoorName[128] = {};
+	std::string pendingDeleteDoorName = {};
 	glm::ivec2 newLevelSize = {40, 24};
 	std::string doorActionMessage = {};
 	bool doorActionHasError = false;
+	bool pendingOpenDeleteDoorPopup = false;
 	std::vector<PendingDoorRename> pendingDoorRenames = {};
+	std::vector<std::string> pendingDoorDeletes = {};
 };

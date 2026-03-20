@@ -1068,6 +1068,7 @@ void Gameplay::drawDebugWindow()
 	{
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
+		ImGui::TextUnformatted("` toggles between gameplay and the last editor mode");
 		ImGui::TextUnformatted("Shift presses dash, holding Shift keeps sprint on");
 		ImGui::TextUnformatted("Controller: LStick/DPad move, A jumps, RT dashes");
 		ImGui::TextUnformatted("M enters measure mode, Escape resumes gameplay");
