@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <unordered_set>
 
 namespace
 {
@@ -56,6 +57,58 @@ namespace
 	fs::path getRoomFilePath(char const *levelName)
 	{
 		return getRoomFilesFolderPath() / (normalizeRoomFileName(levelName) + ".json");
+	}
+
+	std::string trimWhitespace(std::string text)
+	{
+		while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
+		{
+			text.erase(text.begin());
+		}
+
+		while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
+		{
+			text.pop_back();
+		}
+
+		return text;
+	}
+
+	bool validateRoomDoors(Room const &room, std::string &errorMessage)
+	{
+		std::unordered_set<std::string> usedNames;
+
+		for (Door const &door : room.doors)
+		{
+			std::string trimmedName = trimWhitespace(door.name);
+			if (trimmedName.empty())
+			{
+				errorMessage = "Door names can't be empty";
+				return false;
+			}
+
+			if (!usedNames.insert(trimmedName).second)
+			{
+				errorMessage = "Door names must be unique";
+				return false;
+			}
+
+			if (door.size.x <= 0 || door.size.y <= 0)
+			{
+				errorMessage = "Door sizes must stay above zero";
+				return false;
+			}
+
+			if (door.playerSpawnPosition.x < 0 || door.playerSpawnPosition.y < 0 ||
+				door.playerSpawnPosition.x >= room.size.x ||
+				door.playerSpawnPosition.y >= room.size.y)
+			{
+				errorMessage = "Door player spawn positions must stay inside the room";
+				return false;
+			}
+		}
+
+		return true;
 	}
 }
 
@@ -142,12 +195,31 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 		nlohmann::json data = {
 			{"width", room.size.x},
 			{"height", room.size.y},
-			{"blocks", nlohmann::json::array()}
+			{"blocks", nlohmann::json::array()},
+			{"doors", nlohmann::json::array()}
 		};
+
+		if (!validateRoomDoors(room, result.message))
+		{
+			return result;
+		}
 
 		for (Block const &block : room.blocks)
 		{
 			data["blocks"].push_back(block.solid ? 1 : 0);
+		}
+
+		for (Door const &door : room.doors)
+		{
+			data["doors"].push_back({
+				{"name", trimWhitespace(door.name)},
+				{"x", door.position.x},
+				{"y", door.position.y},
+				{"width", door.size.x},
+				{"height", door.size.y},
+				{"playerSpawnX", door.playerSpawnPosition.x},
+				{"playerSpawnY", door.playerSpawnPosition.y}
+			});
 		}
 
 		std::ofstream file(getRoomFilePath(result.levelName.c_str()));
@@ -217,6 +289,72 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 			else
 			{
 				room.blocks[i].solid = blocks[i].get<int>() != 0;
+			}
+		}
+
+		room.doors.clear();
+		if (data.contains("doors"))
+		{
+			if (!data["doors"].is_array())
+			{
+				result.message = "Doors must be stored as a JSON array";
+				return result;
+			}
+
+			std::unordered_set<std::string> usedNames;
+			for (auto const &doorData : data["doors"])
+			{
+				if (!doorData.is_object())
+				{
+					result.message = "Door entries must be JSON objects";
+					return result;
+				}
+
+				Door door = {};
+				door.name = trimWhitespace(doorData.value("name", ""));
+				door.position = {
+					doorData.value("x", 0),
+					doorData.value("y", 0)
+				};
+				door.size = {
+					doorData.value("width", 1),
+					doorData.value("height", 1)
+				};
+				door.playerSpawnPosition = door.position;
+				if (doorData.contains("playerSpawnX") || doorData.contains("playerSpawnY"))
+				{
+					door.playerSpawnPosition = {
+						doorData.value("playerSpawnX", door.position.x),
+						doorData.value("playerSpawnY", door.position.y)
+					};
+				}
+
+				if (door.name.empty())
+				{
+					result.message = "Doors need a non-empty name";
+					return result;
+				}
+
+				if (!usedNames.insert(door.name).second)
+				{
+					result.message = "Door names must be unique";
+					return result;
+				}
+
+				if (door.size.x <= 0 || door.size.y <= 0)
+				{
+					result.message = "Door sizes must stay above zero";
+					return result;
+				}
+
+				if (door.playerSpawnPosition.x < 0 || door.playerSpawnPosition.y < 0 ||
+					door.playerSpawnPosition.x >= room.size.x ||
+					door.playerSpawnPosition.y >= room.size.y)
+				{
+					door.playerSpawnPosition = door.position;
+				}
+
+				room.doors.push_back(door);
 			}
 		}
 

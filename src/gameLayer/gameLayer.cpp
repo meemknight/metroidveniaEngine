@@ -22,18 +22,55 @@ namespace
 		worldEditorMode,
 	};
 
+	struct LevelEditorResumeState
+	{
+		bool valid = false;
+		gl2d::Camera camera = {};
+		float cameraZoom = 32.f;
+		bool cameraInitialized = false;
+		int tool = LevelEditor::measureTool;
+	};
+
+	struct WorldEditorResumeState
+	{
+		bool valid = false;
+		gl2d::Camera camera = {};
+		float cameraZoom = 1.f;
+		bool cameraInitialized = false;
+		std::string selectedLevelName = {};
+	};
+
 	Gameplay gameplay;
 	LevelEditor levelEditor;
 	WorldEditor worldEditor;
 	GameRenderWindow gameRenderWindow;
 	int runtimeMode = gameplayMode;
 	int syncedGameplayLevelLoadRevision = -1;
+	bool levelEditorLoaded = false;
+	bool worldEditorLoaded = false;
+	int pendingModeSwitchTarget = -1;
+	int queuedModeSwitchTarget = -1;
+	LevelEditorResumeState levelEditorResumeState = {};
+	WorldEditorResumeState worldEditorResumeState = {};
 
 	void clearModeRequests();
 	void syncLevelFileNamesFromGameplayToEditor();
 	void syncLevelFileNamesFromEditorToGameplay();
 	void syncLevelSelectionFromWorldEditor();
+	void saveLevelEditorResumeState();
+	void saveWorldEditorResumeState();
+	void unloadLevelEditor();
+	void unloadWorldEditor();
+	void prepareLevelEditorForEnter();
+	void prepareWorldEditorForEnter();
+	char const *getRuntimeModeName(int mode);
 	void switchToMode(int newMode);
+	void requestModeSwitch(int newMode);
+	void applyQueuedModeSwitch();
+#if REMOVE_IMGUI == 0
+	bool modeSwitchPopupOpen();
+	void drawModeSwitchPopup();
+#endif
 
 	void clearModeRequests()
 	{
@@ -75,33 +112,290 @@ namespace
 		levelEditor.selectedLevelName = worldEditor.selectedLevelName;
 	}
 
+	void saveLevelEditorResumeState()
+	{
+		if (!levelEditorLoaded)
+		{
+			return;
+		}
+
+		levelEditorResumeState.valid = true;
+		levelEditorResumeState.camera = levelEditor.camera;
+		levelEditorResumeState.cameraZoom = levelEditor.tuning.cameraZoom;
+		levelEditorResumeState.cameraInitialized = levelEditor.cameraInitialized;
+		levelEditorResumeState.tool = levelEditor.tool;
+	}
+
+	void saveWorldEditorResumeState()
+	{
+		if (!worldEditorLoaded)
+		{
+			return;
+		}
+
+		worldEditorResumeState.valid = true;
+		worldEditorResumeState.camera = worldEditor.camera;
+		worldEditorResumeState.cameraZoom = worldEditor.tuning.cameraZoom;
+		worldEditorResumeState.cameraInitialized = worldEditor.cameraInitialized;
+		worldEditorResumeState.selectedLevelName = worldEditor.selectedLevelName;
+	}
+
+	void unloadLevelEditor()
+	{
+		if (!levelEditorLoaded)
+		{
+			return;
+		}
+
+		saveLevelEditorResumeState();
+		levelEditor.cleanup();
+		levelEditor = {};
+		levelEditorLoaded = false;
+	}
+
+	void unloadWorldEditor()
+	{
+		if (!worldEditorLoaded)
+		{
+			return;
+		}
+
+		saveWorldEditorResumeState();
+		worldEditor.cleanup();
+		worldEditor = {};
+		worldEditorLoaded = false;
+	}
+
+	void prepareLevelEditorForEnter()
+	{
+		levelEditor.init();
+		levelEditorLoaded = true;
+		levelEditor.currentLevelName = gameplay.currentLevelName;
+		levelEditor.selectedLevelName = gameplay.selectedLevelName;
+
+		if (levelEditorResumeState.valid)
+		{
+			levelEditor.camera = levelEditorResumeState.camera;
+			levelEditor.tuning.cameraZoom = levelEditorResumeState.cameraZoom;
+			levelEditor.cameraInitialized = levelEditorResumeState.cameraInitialized;
+			levelEditor.tool = levelEditorResumeState.tool;
+		}
+
+		// When we jump into the level editor from the world view, open the selected room directly.
+		if (!levelEditor.selectedLevelName.empty() &&
+			levelEditor.selectedLevelName != levelEditor.currentLevelName)
+		{
+			levelEditor.loadSelectedLevel(gameplay.room, renderer);
+			gameplay.currentLevelName = levelEditor.currentLevelName;
+			gameplay.selectedLevelName = levelEditor.selectedLevelName;
+		}
+	}
+
+	void prepareWorldEditorForEnter()
+	{
+		worldEditor.init();
+		worldEditorLoaded = true;
+
+		if (worldEditorResumeState.valid)
+		{
+			worldEditor.camera = worldEditorResumeState.camera;
+			worldEditor.tuning.cameraZoom = worldEditorResumeState.cameraZoom;
+			worldEditor.cameraInitialized = worldEditorResumeState.cameraInitialized;
+			worldEditor.selectedLevelName = worldEditorResumeState.selectedLevelName;
+		}
+
+		std::string gameplaySelectedLevel = gameplay.selectedLevelName.empty()
+			? gameplay.currentLevelName
+			: gameplay.selectedLevelName;
+		if (!gameplaySelectedLevel.empty())
+		{
+			worldEditor.selectedLevelName = gameplaySelectedLevel;
+		}
+	}
+
+	char const *getRuntimeModeName(int mode)
+	{
+		switch (mode)
+		{
+			case gameplayMode: return "Game";
+			case levelEditorMode: return "Level Editor";
+			case worldEditorMode: return "World Editor";
+			default: return "Unknown";
+		}
+	}
+
 	void switchToMode(int newMode)
 	{
+		if (newMode == runtimeMode)
+		{
+			clearModeRequests();
+			pendingModeSwitchTarget = -1;
+			return;
+		}
+
 		if (runtimeMode == gameplayMode)
 		{
-			syncLevelFileNamesFromGameplayToEditor();
 		}
 		else if (runtimeMode == levelEditorMode)
 		{
 			syncLevelFileNamesFromEditorToGameplay();
+			unloadLevelEditor();
 		}
 		else if (runtimeMode == worldEditorMode)
 		{
 			syncLevelSelectionFromWorldEditor();
+			unloadWorldEditor();
 		}
 
 		runtimeMode = newMode;
 		clearModeRequests();
+		pendingModeSwitchTarget = -1;
+		queuedModeSwitchTarget = -1;
 
 		if (runtimeMode == levelEditorMode)
 		{
+			prepareLevelEditorForEnter();
 			levelEditor.enter(gameplay.room, renderer);
 		}
 		else if (runtimeMode == worldEditorMode)
 		{
+			prepareWorldEditorForEnter();
 			worldEditor.enter(renderer);
 		}
+		else if (runtimeMode == gameplayMode)
+		{
+			gameplay.refreshWorldData();
+		}
 	}
+
+	void requestModeSwitch(int newMode)
+	{
+		clearModeRequests();
+
+		if (newMode == runtimeMode)
+		{
+			pendingModeSwitchTarget = -1;
+			return;
+		}
+
+#if REMOVE_IMGUI == 0
+		if ((runtimeMode == levelEditorMode && levelEditor.levelDirty) ||
+			(runtimeMode == worldEditorMode && worldEditor.worldDirty))
+		{
+			pendingModeSwitchTarget = newMode;
+			ImGui::OpenPopup("Unsaved Changes Before Switching");
+			return;
+		}
+#else
+		if ((runtimeMode == levelEditorMode && levelEditor.levelDirty) ||
+			(runtimeMode == worldEditorMode && worldEditor.worldDirty))
+		{
+			return;
+		}
+#endif
+
+		queuedModeSwitchTarget = newMode;
+	}
+
+	// Apply queued mode switches only at safe frame boundaries so queued draw data
+	// never references textures/fonts that got cleaned up mid-frame.
+	void applyQueuedModeSwitch()
+	{
+		if (queuedModeSwitchTarget == -1 || queuedModeSwitchTarget == runtimeMode)
+		{
+			queuedModeSwitchTarget = -1;
+			return;
+		}
+
+		switchToMode(queuedModeSwitchTarget);
+	}
+
+#if REMOVE_IMGUI == 0
+	bool modeSwitchPopupOpen()
+	{
+		return ImGui::IsPopupOpen("Unsaved Changes Before Switching");
+	}
+
+	// Mode switches go through one popup so hotkeys and radio buttons behave the same.
+	void drawModeSwitchPopup()
+	{
+		if (ImGui::BeginPopupModal("Unsaved Changes Before Switching", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Switch from %s to %s?",
+				getRuntimeModeName(runtimeMode),
+				getRuntimeModeName(pendingModeSwitchTarget));
+
+			if (runtimeMode == levelEditorMode)
+			{
+				ImGui::TextUnformatted("The current level has unsaved changes.");
+				ImGui::TextUnformatted("Save, discard, or cancel before changing modes.");
+			}
+			else if (runtimeMode == worldEditorMode)
+			{
+				ImGui::TextUnformatted("The current world has unsaved changes.");
+				ImGui::TextUnformatted("Save, discard, or cancel before changing modes.");
+			}
+
+			if (runtimeMode == levelEditorMode && levelEditor.fileActionHasError && !levelEditor.fileActionMessage.empty())
+			{
+				ImGui::TextColored({1.f, 0.45f, 0.35f, 1.f}, "%s", levelEditor.fileActionMessage.c_str());
+			}
+			else if (runtimeMode == worldEditorMode && worldEditor.worldHasError && !worldEditor.worldMessage.empty())
+			{
+				ImGui::TextColored({1.f, 0.45f, 0.35f, 1.f}, "%s", worldEditor.worldMessage.c_str());
+			}
+
+			if (ImGui::Button("Save", {120.f, 0.f}))
+			{
+				bool canSwitch = false;
+				if (runtimeMode == levelEditorMode)
+				{
+					levelEditor.saveCurrentLevel(gameplay.room);
+					canSwitch = !levelEditor.levelDirty && !levelEditor.fileActionHasError;
+				}
+				else if (runtimeMode == worldEditorMode)
+				{
+					worldEditor.saveWorld();
+					canSwitch = !worldEditor.worldDirty && !worldEditor.worldHasError;
+				}
+
+				if (canSwitch)
+				{
+					queuedModeSwitchTarget = pendingModeSwitchTarget;
+					pendingModeSwitchTarget = -1;
+					ImGui::CloseCurrentPopup();
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard", {120.f, 0.f}))
+			{
+				if (runtimeMode == levelEditorMode)
+				{
+					gl2d::Camera preservedCamera = levelEditor.camera;
+					float preservedZoom = levelEditor.tuning.cameraZoom;
+					bool preservedCameraInitialized = levelEditor.cameraInitialized;
+					int preservedTool = levelEditor.tool;
+					levelEditor.reloadCurrentLevel(gameplay.room, renderer);
+					levelEditor.camera = preservedCamera;
+					levelEditor.tuning.cameraZoom = preservedZoom;
+					levelEditor.cameraInitialized = preservedCameraInitialized;
+					levelEditor.tool = preservedTool;
+				}
+
+				queuedModeSwitchTarget = pendingModeSwitchTarget;
+				pendingModeSwitchTarget = -1;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				pendingModeSwitchTarget = -1;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+#endif
 }
 
 // Rebuilds shader binaries in development and reloads GPU shader objects.
@@ -158,8 +452,14 @@ bool initGame(SDL_Renderer *sdlRenderer)
 #endif
 
 	gameplay.init();
-	levelEditor.init();
-	worldEditor.init();
+	levelEditor = {};
+	worldEditor = {};
+	levelEditorLoaded = false;
+	worldEditorLoaded = false;
+	levelEditorResumeState = {};
+	worldEditorResumeState = {};
+	pendingModeSwitchTarget = -1;
+	queuedModeSwitchTarget = -1;
 
 	return true;
 }
@@ -186,11 +486,18 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 #if REMOVE_IMGUI == 0
 	if (input.isButtonPressed(platform::Button::F10))
 	{
-		ImGui::toggleImguiWindowOpen();
+		//temporarily removed
+		//ImGui::toggleImguiWindowOpen();
 	}
 #endif
 
 	gameRenderWindow.begin();
+
+#if REMOVE_IMGUI == 0
+	bool blockingModeSwitchPopup = modeSwitchPopupOpen();
+#else
+	bool blockingModeSwitchPopup = false;
+#endif
 
 	platform::Input renderInput = input;
 	glm::ivec2 renderSize = gameRenderWindow.getRenderSize({mainWindowW, mainWindowH});
@@ -201,20 +508,27 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		renderInput = gameRenderWindow.remapInput(input);
 	}
 
+	if (blockingModeSwitchPopup)
+	{
+		renderInput = {};
+	}
+
 	renderer.updateWindowMetrics(renderSize.x, renderSize.y);
 
-	if (input.isButtonPressed(platform::Button::F6))
+	if (!blockingModeSwitchPopup && input.isButtonPressed(platform::Button::F6))
 	{
-		switchToMode(gameplayMode);
+		requestModeSwitch(gameplayMode);
 	}
-	else if (input.isButtonPressed(platform::Button::F7))
+	else if (!blockingModeSwitchPopup && input.isButtonPressed(platform::Button::F7))
 	{
-		switchToMode(levelEditorMode);
+		requestModeSwitch(levelEditorMode);
 	}
-	else if (input.isButtonPressed(platform::Button::F8))
+	else if (!blockingModeSwitchPopup && input.isButtonPressed(platform::Button::F8))
 	{
-		switchToMode(worldEditorMode);
+		requestModeSwitch(worldEditorMode);
 	}
+
+	applyQueuedModeSwitch();
 
 	if (renderIntoWindow)
 	{
@@ -236,11 +550,11 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		syncLevelFileNamesFromEditorToGameplay();
 		if (levelEditor.requestGameplayMode)
 		{
-			switchToMode(gameplayMode);
+			requestModeSwitch(gameplayMode);
 		}
 		else if (levelEditor.requestWorldEditorMode)
 		{
-			switchToMode(worldEditorMode);
+			requestModeSwitch(worldEditorMode);
 		}
 	}
 	else if (runtimeMode == worldEditorMode)
@@ -250,26 +564,29 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		syncLevelSelectionFromWorldEditor();
 		if (worldEditor.requestGameplayMode)
 		{
-			switchToMode(gameplayMode);
+			requestModeSwitch(gameplayMode);
 		}
 		else if (worldEditor.requestLevelEditorMode)
 		{
-			switchToMode(levelEditorMode);
+			requestModeSwitch(levelEditorMode);
 		}
 	}
 	else
 	{
 		gameplay.update(deltaTime, renderInput, renderer);
-		syncLevelFileNamesFromGameplayToEditor();
 		if (gameplay.requestLevelEditorMode)
 		{
-			switchToMode(levelEditorMode);
+			requestModeSwitch(levelEditorMode);
 		}
 		else if (gameplay.requestWorldEditorMode)
 		{
-			switchToMode(worldEditorMode);
+			requestModeSwitch(worldEditorMode);
 		}
 	}
+
+#if REMOVE_IMGUI == 0
+	drawModeSwitchPopup();
+#endif
 
 	if (renderIntoWindow)
 	{
@@ -303,10 +620,85 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	return true;
 }
 
+bool hasUnsavedEditorChangesForClose()
+{
+	return
+		(runtimeMode == levelEditorMode && levelEditorLoaded && levelEditor.levelDirty) ||
+		(runtimeMode == worldEditorMode && worldEditorLoaded && worldEditor.worldDirty);
+}
+
+std::string getUnsavedEditorChangesDescriptionForClose()
+{
+	if (runtimeMode == levelEditorMode && levelEditorLoaded && levelEditor.levelDirty)
+	{
+		if (!levelEditor.currentLevelName.empty())
+		{
+			return "the current level \"" + levelEditor.currentLevelName + "\"";
+		}
+
+		return "the current level";
+	}
+
+	if (runtimeMode == worldEditorMode && worldEditorLoaded && worldEditor.worldDirty)
+	{
+		return "the current world";
+	}
+
+	return {};
+}
+
+bool saveUnsavedEditorChangesForClose(std::string *errorMessage)
+{
+	if (runtimeMode == levelEditorMode && levelEditorLoaded && levelEditor.levelDirty)
+	{
+		levelEditor.saveCurrentLevel(gameplay.room);
+		if (levelEditor.levelDirty || levelEditor.fileActionHasError)
+		{
+			if (errorMessage)
+			{
+				*errorMessage = levelEditor.fileActionMessage.empty()
+					? "Couldn't save the current level."
+					: levelEditor.fileActionMessage;
+			}
+
+			return false;
+		}
+
+		return true;
+	}
+
+	if (runtimeMode == worldEditorMode && worldEditorLoaded && worldEditor.worldDirty)
+	{
+		worldEditor.saveWorld();
+		if (worldEditor.worldDirty || worldEditor.worldHasError)
+		{
+			if (errorMessage)
+			{
+				*errorMessage = worldEditor.worldMessage.empty()
+					? "Couldn't save the current world."
+					: worldEditor.worldMessage;
+			}
+
+			return false;
+		}
+
+		return true;
+	}
+
+	return true;
+}
+
 //This function might not be be called if the program is forced closed
 void closeGame()
 {
-	levelEditor.cleanup();
-	worldEditor.cleanup();
+	gameplay.cleanup();
+	if (levelEditorLoaded)
+	{
+		levelEditor.cleanup();
+	}
+	if (worldEditorLoaded)
+	{
+		worldEditor.cleanup();
+	}
 	gameRenderWindow.cleanup();
 }

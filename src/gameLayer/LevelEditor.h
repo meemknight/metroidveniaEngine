@@ -6,6 +6,7 @@
 #include <platformInput.h>
 #include <gl2d/gl2d.h>
 #include <string>
+#include <vector>
 
 // Simple in-engine level editor for painting, erasing and filling tile blocks.
 struct LevelEditor
@@ -16,6 +17,7 @@ struct LevelEditor
 		brushTool,
 		rectTool,
 		measureTool,
+		doorTool,
 	};
 
 	struct EditorTuning
@@ -32,6 +34,12 @@ struct LevelEditor
 		noPendingFileAction = 0,
 		loadSelectedFileAction,
 		createNewFileAction,
+	};
+
+	struct PendingDoorRename
+	{
+		std::string oldName = {};
+		std::string newName = {};
 	};
 
 	void init();
@@ -54,9 +62,25 @@ struct LevelEditor
 	void fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, bool solid);
 	void resizeRoom(Room &room, int newSizeX, int newSizeY);
 	glm::vec4 getRectPreview(glm::ivec2 a, glm::ivec2 b);
+	glm::vec2 worldToScreen(glm::vec2 worldPos, gl2d::Renderer2D &renderer);
+	void clearDoorSelection();
+	int getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld);
+	int getHoveredDoorSpawnIndex(Room &room, glm::vec2 mouseWorld);
+	bool hoveredSelectedDoorResizeHandle(Room &room, glm::vec2 mouseWorld);
+	std::string getNextDoorName(Room const &room);
+	bool doorNameIsUnique(Room const &room, char const *name, int ignoreIndex);
+	void createDoorAtHoveredTile(Room &room);
+	void moveSelectedDoor(Room &room, glm::ivec2 position);
+	void resizeSelectedDoor(Room &room, glm::ivec2 size);
+	void deleteSelectedDoor(Room &room);
+	void syncSelectedDoorBuffer(Room &room);
+	void applySelectedDoorName(Room &room);
+	void moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position);
+	void clampDoorToRoom(Door &door, Room const &room);
 	void clampCamera(Room &room, gl2d::Renderer2D &renderer);
 	void drawRoom(Room &room, gl2d::Renderer2D &renderer);
 	void drawGrid(Room &room, gl2d::Renderer2D &renderer);
+	void drawDoors(Room &room, gl2d::Renderer2D &renderer);
 	void drawHoveredTile(gl2d::Renderer2D &renderer);
 	void drawRectPreview(gl2d::Renderer2D &renderer);
 	void drawMeasureText(gl2d::Renderer2D &renderer);
@@ -76,13 +100,20 @@ struct LevelEditor
 	glm::ivec2 hoveredTile = {-1, -1};
 	bool hoveredTileValid = false;
 	glm::vec2 mouseScreenPosition = {};
+	glm::vec2 mouseWorldPosition = {};
 
 	bool rectDragActive = false;
 	bool rectDragPlacesSolid = true;
 	glm::ivec2 rectDragStart = {};
 	glm::ivec2 rectDragEnd = {};
+	int selectedDoorIndex = -1;
+	bool doorDragActive = false;
+	bool doorResizeActive = false;
+	bool doorSpawnDragActive = false;
+	glm::ivec2 doorDragGrabOffset = {};
 
 	glm::ivec2 pendingRoomSize = {};
+	glm::ivec2 pendingResizeConfirmSize = {};
 	bool cameraInitialized = false;
 
 	// Simple file-management state for the JSON room files under resources/levels.
@@ -93,9 +124,15 @@ struct LevelEditor
 	bool fileActionHasError = false;
 	bool levelDirty = false;
 	int pendingFileAction = noPendingFileAction;
+	bool pendingApplyPendingFileAction = false;
+	bool pendingReloadCurrentLevel = false;
 	bool requestGameplayMode = false;
 	bool requestWorldEditorMode = false;
 	char newLevelName[128] = {};
 	char renameName[128] = {};
+	char selectedDoorName[128] = {};
 	glm::ivec2 newLevelSize = {40, 24};
+	std::string doorActionMessage = {};
+	bool doorActionHasError = false;
+	std::vector<PendingDoorRename> pendingDoorRenames = {};
 };

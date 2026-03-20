@@ -1,5 +1,7 @@
 #pragma once
 
+#include "door.h"
+
 #include <glm/vec2.hpp>
 #include <vector>
 
@@ -25,4 +27,5 @@ struct Room
 
 	std::vector<Block> blocks;
 	glm::ivec2 size = {};
+	std::vector<Door> doors;
 };

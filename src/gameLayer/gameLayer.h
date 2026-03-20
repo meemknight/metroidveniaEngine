@@ -9,6 +9,9 @@ struct SDL_Renderer;
 bool initGame(SDL_Renderer *sdlRenderer);
 bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRenderer);
 void closeGame();
+bool hasUnsavedEditorChangesForClose();
+std::string getUnsavedEditorChangesDescriptionForClose();
+bool saveUnsavedEditorChangesForClose(std::string *errorMessage = nullptr);
 
 namespace platform
 {
@@ -55,4 +58,3 @@ namespace platform
 #include <gl2d/gl2d.h>
 
 gl2d::Renderer2D &getRenderer();
-

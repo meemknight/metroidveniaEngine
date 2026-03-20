@@ -5,12 +5,20 @@
 #include <string>
 #include <unordered_map>
 
+// Stores a world-level connection target for one door inside a placed room.
+struct WorldDoorLink
+{
+	std::string levelName = {};
+	std::string doorName = {};
+};
+
 struct WorldLevelPlacement
 {
 	std::string name = {};
 	glm::vec2 position = {}; // top-left corner in the virtual world
-	glm::ivec2 size = {};
+	glm::ivec2 size = {}; // runtime room size loaded from the room file
 	int flags = 0;
+	std::unordered_map<std::string, WorldDoorLink> doorLinks = {};
 
 	glm::vec4 getRect() const
 	{
@@ -34,3 +42,4 @@ struct WorldIoResult
 std::string getWorldFilePath();
 WorldIoResult loadWorldData(WorldData &world);
 WorldIoResult saveWorldData(WorldData const &world);
+WorldIoResult renameDoorReferencesInWorld(char const *levelName, char const *oldDoorName, char const *newDoorName);

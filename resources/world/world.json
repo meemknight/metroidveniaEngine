@@ -7,20 +7,122 @@
 	},
 	"levels": [
 		{
+			"doorLinks": [
+				{
+					"door": "right1",
+					"linkedDoor": "left1",
+					"linkedLevel": "level1"
+				}
+			],
 			"flags": 0,
-			"height": 48,
-			"name": "level1",
-			"width": 160,
-			"x": -286.340087890625,
-			"y": 34.94833755493164
+			"name": "dashLevel",
+			"x": -342.8865966796875,
+			"y": 21.603736877441406
 		},
 		{
+			"doorLinks": [
+				{
+					"door": "left1",
+					"linkedDoor": "right1",
+					"linkedLevel": "dashLevel"
+				},
+				{
+					"door": "right1",
+					"linkedDoor": "left1",
+					"linkedLevel": "level2"
+				}
+			],
 			"flags": 0,
-			"height": 24,
+			"name": "level1",
+			"x": -279.9898681640625,
+			"y": 38.15775680541992
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 1",
+					"linkedDoor": "door 3",
+					"linkedLevel": "level5"
+				},
+				{
+					"door": "left1",
+					"linkedDoor": "right1",
+					"linkedLevel": "level1"
+				},
+				{
+					"door": "right1",
+					"linkedDoor": "door 2",
+					"linkedLevel": "level3"
+				}
+			],
+			"flags": 0,
 			"name": "level2",
-			"width": 40,
-			"x": -115.36170959472656,
-			"y": 59.130821228027344
+			"x": -116.09326171875,
+			"y": 51.37685012817383
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 2",
+					"linkedDoor": "right1",
+					"linkedLevel": "level2"
+				},
+				{
+					"door": "up1",
+					"linkedDoor": "down1",
+					"linkedLevel": "level4"
+				}
+			],
+			"flags": 0,
+			"name": "level3",
+			"x": -52.301639556884766,
+			"y": 41.318660736083984
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "down1",
+					"linkedDoor": "up1",
+					"linkedLevel": "level3"
+				},
+				{
+					"door": "left1",
+					"linkedDoor": "door 1",
+					"linkedLevel": "level5"
+				},
+				{
+					"door": "left2",
+					"linkedDoor": "door 2",
+					"linkedLevel": "level5"
+				}
+			],
+			"flags": 0,
+			"name": "level4",
+			"x": -23.20059585571289,
+			"y": -2.7057857513427734
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 1",
+					"linkedDoor": "left1",
+					"linkedLevel": "level4"
+				},
+				{
+					"door": "door 2",
+					"linkedDoor": "left2",
+					"linkedLevel": "level4"
+				},
+				{
+					"door": "door 3",
+					"linkedDoor": "door 1",
+					"linkedLevel": "level2"
+				}
+			],
+			"flags": 0,
+			"name": "level5",
+			"x": -111.15738677978516,
+			"y": -2.1802024841308594
 		}
 	]
 }

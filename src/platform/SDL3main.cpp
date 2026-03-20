@@ -49,6 +49,61 @@ static bool gUseImguiGpuRenderer = false;
 #endif
 #pragma endregion
 
+static bool confirmQuitRequest()
+{
+	if (!hasUnsavedEditorChangesForClose())
+	{
+		return true;
+	}
+
+	std::string message =
+		"You have unsaved changes in " + getUnsavedEditorChangesDescriptionForClose() +
+		".\n\nDo you want to save before closing the program?";
+
+	const SDL_MessageBoxButtonData buttons[] = {
+		{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Save"},
+		{0, 2, "Discard"},
+		{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
+	};
+
+	SDL_MessageBoxData data = {};
+	data.flags = SDL_MESSAGEBOX_WARNING;
+	data.window = window;
+	data.title = "Unsaved Changes";
+	data.message = message.c_str();
+	data.numbuttons = SDL_arraysize(buttons);
+	data.buttons = buttons;
+
+	int buttonId = 0;
+	if (!SDL_ShowMessageBox(&data, &buttonId))
+	{
+		return false;
+	}
+
+	if (buttonId == 1)
+	{
+		std::string errorMessage = {};
+		if (saveUnsavedEditorChangesForClose(&errorMessage))
+		{
+			return true;
+		}
+
+		if (errorMessage.empty())
+		{
+			errorMessage = "Couldn't save before closing.";
+		}
+
+		SDL_ShowSimpleMessageBox(
+			SDL_MESSAGEBOX_ERROR,
+			"Save Failed",
+			errorMessage.c_str(),
+			window);
+		return false;
+	}
+
+	return buttonId == 2;
+}
+
 static SDL_Renderer *createRendererPreferVulkan(SDL_Window *window)
 {
 	if (!window) { return nullptr; }
@@ -200,12 +255,12 @@ static void handleSDLEvent(const SDL_Event &e)
 {
 	switch (e.type)
 	{
+	case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
 	case SDL_EVENT_QUIT:
-#ifdef __EMSCRIPTEN__
-	gShouldQuit = true;
-#else
-	exit(0);
-#endif
+		if (confirmQuitRequest())
+		{
+			gShouldQuit = true;
+		}
 	break;
 
 	case SDL_EVENT_WINDOW_FOCUS_GAINED:

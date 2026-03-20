@@ -1,6 +1,7 @@
 #include "LevelEditor.h"
 
 #include "RoomIo.h"
+#include "WorldIo.h"
 #include "imguiTools.h"
 
 #include <algorithm>
@@ -11,10 +12,81 @@
 
 namespace
 {
+	const glm::ivec2 kDefaultDoorSize = {2, 3};
+	const gl2d::Color4f kDoorFillColor = {1.0f, 0.56f, 0.12f, 0.14f};
+	const gl2d::Color4f kDoorOutlineColor = {1.0f, 0.64f, 0.18f, 0.72f};
+	const gl2d::Color4f kSelectedDoorFillColor = {1.0f, 0.62f, 0.12f, 0.22f};
+	const gl2d::Color4f kSelectedDoorOutlineColor = {1.0f, 0.78f, 0.28f, 1.0f};
+	const gl2d::Color4f kDoorSpawnFillColor = {1.0f, 0.88f, 0.18f, 0.24f};
+	const gl2d::Color4f kDoorSpawnOutlineColor = {1.0f, 0.92f, 0.32f, 0.96f};
+
 	template<size_t N>
 	void copyStringToBuffer(char (&buffer)[N], std::string const &text)
 	{
 		std::snprintf(buffer, N, "%s", text.c_str());
+	}
+
+	std::string trimWhitespace(std::string text)
+	{
+		while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
+		{
+			text.erase(text.begin());
+		}
+
+		while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
+		{
+			text.pop_back();
+		}
+
+		return text;
+	}
+
+	bool roomHasDoorNamed(Room const &room, std::string const &doorName)
+	{
+		for (Door const &door : room.doors)
+		{
+			if (door.name == doorName)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void queuePendingDoorRename(std::vector<LevelEditor::PendingDoorRename> &pendingDoorRenames,
+		std::string const &oldName, std::string const &newName)
+	{
+		if (oldName.empty() || newName.empty() || oldName == newName)
+		{
+			return;
+		}
+
+		bool mergedRename = false;
+		for (auto &rename : pendingDoorRenames)
+		{
+			if (rename.newName == oldName || rename.oldName == oldName)
+			{
+				rename.newName = newName;
+				mergedRename = true;
+				break;
+			}
+		}
+
+		if (!mergedRename)
+		{
+			pendingDoorRenames.push_back({oldName, newName});
+		}
+
+		pendingDoorRenames.erase(
+			std::remove_if(pendingDoorRenames.begin(), pendingDoorRenames.end(),
+				[](LevelEditor::PendingDoorRename const &rename)
+				{
+					return rename.oldName.empty() ||
+						rename.newName.empty() ||
+						rename.oldName == rename.newName;
+				}),
+			pendingDoorRenames.end());
 	}
 
 #if REMOVE_IMGUI == 0
@@ -38,7 +110,8 @@ namespace
 		return
 			ImGui::IsPopupOpen("Unsaved Changes") ||
 			ImGui::IsPopupOpen("Delete Level") ||
-			ImGui::IsPopupOpen("Discard Current Changes");
+			ImGui::IsPopupOpen("Discard Current Changes") ||
+			ImGui::IsPopupOpen("Resize Level");
 	}
 #endif
 }
@@ -90,6 +163,30 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 {
 	deltaTime = std::min(deltaTime, 0.05f);
 
+	// File/load actions can replace editor state, so run them at the start of a frame
+	// before new room draw data gets queued.
+	if (pendingReloadCurrentLevel)
+	{
+		pendingReloadCurrentLevel = false;
+		reloadCurrentLevel(room, renderer);
+	}
+
+	if (pendingApplyPendingFileAction)
+	{
+		pendingApplyPendingFileAction = false;
+
+		if (pendingFileAction == loadSelectedFileAction)
+		{
+			loadSelectedLevel(room, renderer);
+		}
+		else if (pendingFileAction == createNewFileAction)
+		{
+			createNewLevel(room, renderer);
+		}
+
+		pendingFileAction = noPendingFileAction;
+	}
+
 #if REMOVE_IMGUI == 0
 	// Modal popups should fully own input so the world view doesn't keep reacting underneath them.
 	if (editorModalPopupOpen())
@@ -101,6 +198,10 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 	if (!currentLevelName.empty())
 	{
 		syncPendingRoomSize(room);
+		if (selectedDoorIndex >= static_cast<int>(room.doors.size()))
+		{
+			clearDoorSelection();
+		}
 
 		if (!cameraInitialized)
 		{
@@ -111,6 +212,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 	{
 		camera.zoom = tuning.cameraZoom;
 		setViewCenter({}, renderer);
+		clearDoorSelection();
 	}
 
 	updateShortcuts(input, room, gameViewFocused);
@@ -124,6 +226,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 	{
 		drawRoom(room, renderer);
 		drawGrid(room, renderer);
+		drawDoors(room, renderer);
 		drawRectPreview(renderer);
 		drawHoveredTile(renderer);
 		drawMeasureText(renderer);
@@ -182,6 +285,17 @@ glm::vec2 LevelEditor::screenToWorld(glm::vec2 screenPos, gl2d::Renderer2D &rend
 		static_cast<float>(renderer.windowH));
 }
 
+glm::vec2 LevelEditor::worldToScreen(glm::vec2 worldPos, gl2d::Renderer2D &renderer)
+{
+	glm::vec2 screenCenter = {
+		static_cast<float>(renderer.windowW) * 0.5f,
+		static_cast<float>(renderer.windowH) * 0.5f
+	};
+
+	glm::vec2 cameraCenter = camera.position + screenCenter;
+	return screenCenter + (worldPos - cameraCenter) * camera.zoom;
+}
+
 void LevelEditor::syncPendingRoomSize(Room &room)
 {
 	if (pendingRoomSize.x <= 0 || pendingRoomSize.y <= 0)
@@ -201,17 +315,16 @@ void LevelEditor::focusRoom(Room &room, gl2d::Renderer2D &renderer)
 void LevelEditor::updateHoveredTile(platform::Input &input, gl2d::Renderer2D &renderer, Room &room)
 {
 	mouseScreenPosition = {static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)};
+	mouseWorldPosition = screenToWorld(mouseScreenPosition, renderer);
 	if (currentLevelName.empty())
 	{
 		hoveredTileValid = false;
 		return;
 	}
 
-	glm::vec2 mouseWorld = screenToWorld({static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)}, renderer);
-
 	hoveredTile = {
-		static_cast<int>(std::floor(mouseWorld.x)),
-		static_cast<int>(std::floor(mouseWorld.y))
+		static_cast<int>(std::floor(mouseWorldPosition.x)),
+		static_cast<int>(std::floor(mouseWorldPosition.y))
 	};
 
 	hoveredTileValid = room.getBlockSafe(hoveredTile.x, hoveredTile.y) != nullptr;
@@ -226,11 +339,15 @@ void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	}
 
 	glm::vec2 center = getViewCenter(renderer);
+	bool allowCameraMove = !input.isButtonHeld(platform::Button::LeftCtrl);
 
-	if (input.isButtonHeld(platform::Button::A) || input.isButtonHeld(platform::Button::Left)) { center.x -= moveSpeed * deltaTime; }
-	if (input.isButtonHeld(platform::Button::D) || input.isButtonHeld(platform::Button::Right)) { center.x += moveSpeed * deltaTime; }
-	if (input.isButtonHeld(platform::Button::W) || input.isButtonHeld(platform::Button::Up)) { center.y -= moveSpeed * deltaTime; }
-	if (input.isButtonHeld(platform::Button::S) || input.isButtonHeld(platform::Button::Down)) { center.y += moveSpeed * deltaTime; }
+	if (allowCameraMove)
+	{
+		if (input.isButtonHeld(platform::Button::A) || input.isButtonHeld(platform::Button::Left)) { center.x -= moveSpeed * deltaTime; }
+		if (input.isButtonHeld(platform::Button::D) || input.isButtonHeld(platform::Button::Right)) { center.x += moveSpeed * deltaTime; }
+		if (input.isButtonHeld(platform::Button::W) || input.isButtonHeld(platform::Button::Up)) { center.y -= moveSpeed * deltaTime; }
+		if (input.isButtonHeld(platform::Button::S) || input.isButtonHeld(platform::Button::Down)) { center.y += moveSpeed * deltaTime; }
+	}
 
 	if (input.isButtonHeld(platform::Button::Q))
 	{
@@ -257,6 +374,9 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 	if (input.isButtonPressed(platform::Button::Escape))
 	{
 		rectDragActive = false;
+		doorDragActive = false;
+		doorResizeActive = false;
+		doorSpawnDragActive = false;
 	}
 
 	bool saveShortcut = !currentLevelName.empty() &&
@@ -270,10 +390,11 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 #if REMOVE_IMGUI == 0
 	if (!ImGui::isImguiWindowOpen())
 	{
-		if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; }
-		if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; }
-		if (input.isButtonPressed(platform::Button::NR3)) { tool = rectTool; rectDragActive = false; }
-		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; rectDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR3)) { tool = rectTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 		return;
 	}
@@ -281,17 +402,19 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 	ImGuiIO &io = ImGui::GetIO();
 	if (gameViewFocused || !io.WantCaptureKeyboard)
 	{
-		if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; }
-		if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; }
-		if (input.isButtonPressed(platform::Button::NR3)) { tool = rectTool; rectDragActive = false; }
-		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; rectDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR3)) { tool = rectTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 	}
 #else
-	if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; }
-	if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; }
-	if (input.isButtonPressed(platform::Button::NR3)) { tool = rectTool; rectDragActive = false; }
-	if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; rectDragActive = false; }
+	if (input.isButtonPressed(platform::Button::NR1)) { tool = noneTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+	if (input.isButtonPressed(platform::Button::NR2)) { tool = brushTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+	if (input.isButtonPressed(platform::Button::NR3)) { tool = rectTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+	if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+	if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
 	if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 #endif
 }
@@ -301,6 +424,9 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 	if (currentLevelName.empty())
 	{
 		rectDragActive = false;
+		doorDragActive = false;
+		doorResizeActive = false;
+		doorSpawnDragActive = false;
 		return;
 	}
 
@@ -310,6 +436,125 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		return;
 	}
 #endif
+
+	if (tool == doorTool)
+	{
+		if (selectedDoorIndex >= static_cast<int>(room.doors.size()))
+		{
+			clearDoorSelection();
+		}
+
+		if (doorSpawnDragActive)
+		{
+			if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+			{
+				doorSpawnDragActive = false;
+				return;
+			}
+
+			if (!input.isLMouseHeld())
+			{
+				doorSpawnDragActive = false;
+				return;
+			}
+
+			if (hoveredTileValid)
+			{
+				moveSelectedDoorSpawnPosition(room, hoveredTile);
+			}
+
+			return;
+		}
+
+		glm::vec2 doorMousePoint = mouseWorldPosition;
+
+		if (doorDragActive || doorResizeActive)
+		{
+			if (!input.isLMouseHeld())
+			{
+				doorDragActive = false;
+				doorResizeActive = false;
+				return;
+			}
+
+			if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+			{
+				clearDoorSelection();
+				return;
+			}
+
+			if (doorResizeActive)
+			{
+				glm::ivec2 newSize = {
+					static_cast<int>(std::floor(doorMousePoint.x)) - room.doors[selectedDoorIndex].position.x + 1,
+					static_cast<int>(std::floor(doorMousePoint.y)) - room.doors[selectedDoorIndex].position.y + 1
+				};
+				resizeSelectedDoor(room, newSize);
+			}
+			else if (hoveredTileValid)
+			{
+				moveSelectedDoor(room, hoveredTile - doorDragGrabOffset);
+			}
+
+			return;
+		}
+
+		if (!input.isLMousePressed())
+		{
+			return;
+		}
+
+		int hoveredDoorSpawnIndex = getHoveredDoorSpawnIndex(room, doorMousePoint);
+		if (hoveredDoorSpawnIndex >= 0)
+		{
+			selectedDoorIndex = hoveredDoorSpawnIndex;
+			syncSelectedDoorBuffer(room);
+			doorActionMessage.clear();
+			doorActionHasError = false;
+			doorDragActive = false;
+			doorResizeActive = false;
+			doorSpawnDragActive = true;
+			return;
+		}
+
+		int hoveredDoorIndex = getHoveredDoorIndex(room, doorMousePoint);
+		if (hoveredDoorIndex >= 0)
+		{
+			selectedDoorIndex = hoveredDoorIndex;
+			syncSelectedDoorBuffer(room);
+			doorActionMessage.clear();
+			doorActionHasError = false;
+
+			if (hoveredSelectedDoorResizeHandle(room, doorMousePoint))
+			{
+				doorResizeActive = true;
+			}
+			else if (hoveredTileValid)
+			{
+				doorDragActive = true;
+				doorDragGrabOffset = hoveredTile - room.doors[selectedDoorIndex].position;
+			}
+
+			return;
+		}
+
+		if (!hoveredTileValid)
+		{
+			clearDoorSelection();
+			return;
+		}
+
+		if (!input.isButtonHeld(platform::Button::LeftCtrl))
+		{
+			clearDoorSelection();
+			return;
+		}
+
+		createDoorAtHoveredTile(room);
+		doorDragActive = true;
+		doorDragGrabOffset = {};
+		return;
+	}
 
 	if (tool == brushTool)
 	{
@@ -429,10 +674,26 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 		}
 	}
 
+	resizedRoom.doors = room.doors;
+	for (Door &door : resizedRoom.doors)
+	{
+		clampDoorToRoom(door, resizedRoom);
+	}
+
 	room = resizedRoom;
 	pendingRoomSize = room.size;
 	hoveredTileValid = false;
 	rectDragActive = false;
+	doorDragActive = false;
+	doorResizeActive = false;
+	if (selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		clearDoorSelection();
+	}
+	else
+	{
+		syncSelectedDoorBuffer(room);
+	}
 	levelDirty = true;
 }
 
@@ -449,6 +710,276 @@ glm::vec4 LevelEditor::getRectPreview(glm::ivec2 a, glm::ivec2 b)
 		static_cast<float>(maxX - minX + 1),
 		static_cast<float>(maxY - minY + 1)
 	};
+}
+
+void LevelEditor::clearDoorSelection()
+{
+	selectedDoorIndex = -1;
+	doorDragActive = false;
+	doorResizeActive = false;
+	doorSpawnDragActive = false;
+	doorDragGrabOffset = {};
+	selectedDoorName[0] = 0;
+}
+
+int LevelEditor::getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld)
+{
+	if (selectedDoorIndex >= 0 && selectedDoorIndex < static_cast<int>(room.doors.size()) &&
+		room.doors[selectedDoorIndex].contains(mouseWorld))
+	{
+		return selectedDoorIndex;
+	}
+
+	for (int i = static_cast<int>(room.doors.size()) - 1; i >= 0; i--)
+	{
+		if (room.doors[i].contains(mouseWorld))
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+int LevelEditor::getHoveredDoorSpawnIndex(Room &room, glm::vec2 mouseWorld)
+{
+	auto doorSpawnContains = [&](Door const &door)
+	{
+		return
+			mouseWorld.x >= door.playerSpawnPosition.x &&
+			mouseWorld.y >= door.playerSpawnPosition.y &&
+			mouseWorld.x <= door.playerSpawnPosition.x + 1 &&
+			mouseWorld.y <= door.playerSpawnPosition.y + 1;
+	};
+
+	if (selectedDoorIndex >= 0 && selectedDoorIndex < static_cast<int>(room.doors.size()) &&
+		doorSpawnContains(room.doors[selectedDoorIndex]))
+	{
+		return selectedDoorIndex;
+	}
+
+	for (int i = static_cast<int>(room.doors.size()) - 1; i >= 0; i--)
+	{
+		if (doorSpawnContains(room.doors[i]))
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+bool LevelEditor::hoveredSelectedDoorResizeHandle(Room &room, glm::vec2 mouseWorld)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		return false;
+	}
+
+	Door const &door = room.doors[selectedDoorIndex];
+	glm::vec2 handleMin = glm::vec2(door.position) + glm::vec2(door.size) - glm::vec2(0.60f);
+	glm::vec2 handleMax = glm::vec2(door.position) + glm::vec2(door.size) + glm::vec2(0.25f);
+
+	return
+		mouseWorld.x >= handleMin.x &&
+		mouseWorld.y >= handleMin.y &&
+		mouseWorld.x <= handleMax.x &&
+		mouseWorld.y <= handleMax.y;
+}
+
+std::string LevelEditor::getNextDoorName(Room const &room)
+{
+	for (int index = 1; ; index++)
+	{
+		std::string candidate = "door " + std::to_string(index);
+		if (doorNameIsUnique(room, candidate.c_str(), -1))
+		{
+			return candidate;
+		}
+	}
+}
+
+bool LevelEditor::doorNameIsUnique(Room const &room, char const *name, int ignoreIndex)
+{
+	std::string trimmedName = trimWhitespace(name ? name : "");
+	if (trimmedName.empty())
+	{
+		return false;
+	}
+
+	for (int i = 0; i < static_cast<int>(room.doors.size()); i++)
+	{
+		if (i == ignoreIndex)
+		{
+			continue;
+		}
+
+		if (trimWhitespace(room.doors[i].name) == trimmedName)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void LevelEditor::createDoorAtHoveredTile(Room &room)
+{
+	if (!hoveredTileValid)
+	{
+		return;
+	}
+
+	Door door = {};
+	door.name = getNextDoorName(room);
+	door.position = hoveredTile;
+	door.size = kDefaultDoorSize;
+	door.playerSpawnPosition = door.position;
+	clampDoorToRoom(door, room);
+
+	room.doors.push_back(door);
+	selectedDoorIndex = static_cast<int>(room.doors.size()) - 1;
+	syncSelectedDoorBuffer(room);
+	doorActionMessage.clear();
+	doorActionHasError = false;
+	levelDirty = true;
+}
+
+void LevelEditor::moveSelectedDoor(Room &room, glm::ivec2 position)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		return;
+	}
+
+	Door &door = room.doors[selectedDoorIndex];
+	if (door.position == position)
+	{
+		return;
+	}
+
+	// Doors are allowed to sit outside the room bounds so exits can hang off map edges.
+	door.position = position;
+	levelDirty = true;
+}
+
+void LevelEditor::resizeSelectedDoor(Room &room, glm::ivec2 size)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		return;
+	}
+
+	Door &door = room.doors[selectedDoorIndex];
+	glm::ivec2 clampedSize = {
+		std::max(size.x, 1),
+		std::max(size.y, 1)
+	};
+
+	if (door.size == clampedSize)
+	{
+		return;
+	}
+
+	door.size = clampedSize;
+	levelDirty = true;
+}
+
+void LevelEditor::deleteSelectedDoor(Room &room)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		return;
+	}
+
+	room.doors.erase(room.doors.begin() + selectedDoorIndex);
+	clearDoorSelection();
+	doorActionHasError = false;
+	doorActionMessage = "Deleted selected door";
+	levelDirty = true;
+}
+
+void LevelEditor::moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		return;
+	}
+
+	Door &door = room.doors[selectedDoorIndex];
+	glm::ivec2 clampedPosition = {
+		std::clamp(position.x, 0, std::max(room.size.x - 1, 0)),
+		std::clamp(position.y, 0, std::max(room.size.y - 1, 0))
+	};
+
+	if (door.playerSpawnPosition == clampedPosition)
+	{
+		doorActionHasError = false;
+		doorActionMessage = "Player spawn unchanged";
+		return;
+	}
+
+	door.playerSpawnPosition = clampedPosition;
+	doorActionHasError = false;
+	doorActionMessage = "Moved selected door player spawn";
+	levelDirty = true;
+}
+
+void LevelEditor::syncSelectedDoorBuffer(Room &room)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		selectedDoorName[0] = 0;
+		return;
+	}
+
+	copyStringToBuffer(selectedDoorName, room.doors[selectedDoorIndex].name);
+}
+
+void LevelEditor::applySelectedDoorName(Room &room)
+{
+	if (selectedDoorIndex < 0 || selectedDoorIndex >= static_cast<int>(room.doors.size()))
+	{
+		return;
+	}
+
+	std::string trimmedName = trimWhitespace(selectedDoorName);
+	if (trimmedName.empty())
+	{
+		doorActionHasError = true;
+		doorActionMessage = "Door names can't be empty";
+		return;
+	}
+
+	if (!doorNameIsUnique(room, trimmedName.c_str(), selectedDoorIndex))
+	{
+		doorActionHasError = true;
+		doorActionMessage = "Door names must stay unique";
+		return;
+	}
+
+	Door &door = room.doors[selectedDoorIndex];
+	if (door.name == trimmedName)
+	{
+		doorActionHasError = false;
+		doorActionMessage = "Door name unchanged";
+		return;
+	}
+
+	queuePendingDoorRename(pendingDoorRenames, door.name, trimmedName);
+	door.name = trimmedName;
+	copyStringToBuffer(selectedDoorName, door.name);
+	doorActionHasError = false;
+	doorActionMessage = "Renamed selected door";
+	levelDirty = true;
+}
+
+void LevelEditor::clampDoorToRoom(Door &door, Room const &room)
+{
+	door.size.x = std::max(door.size.x, 1);
+	door.size.y = std::max(door.size.y, 1);
+	door.playerSpawnPosition.x = std::clamp(door.playerSpawnPosition.x, 0, std::max(room.size.x - 1, 0));
+	door.playerSpawnPosition.y = std::clamp(door.playerSpawnPosition.y, 0, std::max(room.size.y - 1, 0));
 }
 
 void LevelEditor::clampCamera(Room &room, gl2d::Renderer2D &renderer)
@@ -533,6 +1064,106 @@ void LevelEditor::drawGrid(Room &room, gl2d::Renderer2D &renderer)
 	}
 }
 
+void LevelEditor::drawDoors(Room &room, gl2d::Renderer2D &renderer)
+{
+	// Keep doors visible at all times so connections are easy to line up while editing tiles.
+	for (int i = 0; i < static_cast<int>(room.doors.size()); i++)
+	{
+		Door const &door = room.doors[i];
+		bool selected = i == selectedDoorIndex;
+		gl2d::Color4f fillColor = selected ? kSelectedDoorFillColor : kDoorFillColor;
+		gl2d::Color4f outlineColor = selected ? kSelectedDoorOutlineColor : kDoorOutlineColor;
+		gl2d::Color4f spawnFillColor = selected ? gl2d::Color4f{1.0f, 0.92f, 0.24f, 0.34f} : kDoorSpawnFillColor;
+		gl2d::Color4f spawnOutlineColor = selected ? gl2d::Color4f{1.0f, 0.96f, 0.34f, 1.f} : kDoorSpawnOutlineColor;
+
+		renderer.renderRectangle(door.getRectF(), fillColor);
+		renderer.renderRectangleOutline(door.getRectF(), outlineColor, selected ? 0.12f : 0.08f);
+		renderer.renderLine(
+			glm::vec2(door.position) + glm::vec2(door.size) * 0.5f,
+			glm::vec2(door.playerSpawnPosition) + glm::vec2(0.5f, 0.5f),
+			spawnOutlineColor,
+			selected ? 0.10f : 0.07f);
+		renderer.renderRectangle(door.getPlayerSpawnRectF(), spawnFillColor);
+		renderer.renderRectangleOutline(door.getPlayerSpawnRectF(), spawnOutlineColor, selected ? 0.10f : 0.08f);
+
+		if (selected && tool == doorTool)
+		{
+			renderer.renderRectangle(
+				{
+					door.position.x + door.size.x - 0.46f,
+					door.position.y + door.size.y - 0.46f,
+					0.34f,
+					0.34f
+				},
+				kSelectedDoorOutlineColor);
+		}
+
+		if (selected && doorSpawnDragActive)
+		{
+			renderer.renderRectangleOutline(door.getPlayerSpawnRectF(), {1.0f, 0.98f, 0.40f, 1.f}, 0.14f);
+		}
+	}
+
+	if (!measureFont.texture.isValid())
+	{
+		return;
+	}
+
+	renderer.pushCamera();
+
+	for (int i = 0; i < static_cast<int>(room.doors.size()); i++)
+	{
+		Door const &door = room.doors[i];
+		glm::vec2 screenPos = worldToScreen(glm::vec2(door.position), renderer) + glm::vec2(8.f, 8.f);
+
+		if (screenPos.x < -240.f || screenPos.y < -80.f ||
+			screenPos.x > renderer.windowW + 240.f || screenPos.y > renderer.windowH + 80.f)
+		{
+			continue;
+		}
+
+		char text[128] = {};
+		std::snprintf(text, sizeof(text), "%s\n%d x %d", door.name.c_str(), door.size.x, door.size.y);
+		char spawnText[128] = {};
+		std::snprintf(spawnText, sizeof(spawnText), "%s", door.name.c_str());
+
+		gl2d::Color4f textColor = (i == selectedDoorIndex)
+			? gl2d::Color4f{1.0f, 0.88f, 0.40f, 1.f}
+			: gl2d::Color4f{1.0f, 0.74f, 0.42f, 0.82f};
+		gl2d::Color4f spawnTextColor = (i == selectedDoorIndex)
+			? gl2d::Color4f{1.0f, 0.96f, 0.44f, 1.f}
+			: gl2d::Color4f{1.0f, 0.90f, 0.36f, 0.84f};
+
+		renderer.renderText(
+			screenPos,
+			text,
+			measureFont,
+			textColor,
+			18.f,
+			4.f,
+			3.f,
+			false,
+			{0.10f, 0.08f, 0.04f, 0.90f});
+
+		glm::vec2 spawnScreenPos =
+			worldToScreen(glm::vec2(door.playerSpawnPosition) + glm::vec2(1.f, 0.f), renderer) +
+			glm::vec2(8.f, -6.f);
+
+		renderer.renderText(
+			spawnScreenPos,
+			spawnText,
+			measureFont,
+			spawnTextColor,
+			16.f,
+			4.f,
+			3.f,
+			false,
+			{0.10f, 0.09f, 0.04f, 0.86f});
+	}
+
+	renderer.popCamera();
+}
+
 void LevelEditor::drawHoveredTile(gl2d::Renderer2D &renderer)
 {
 	if (!hoveredTileValid)
@@ -552,6 +1183,12 @@ void LevelEditor::drawHoveredTile(gl2d::Renderer2D &renderer)
 	if (tool == measureTool)
 	{
 		hoverColor = {0.28f, 0.68f, 1.0f, 0.9f};
+	}
+	if (tool == doorTool)
+	{
+		hoverColor = doorSpawnDragActive
+			? gl2d::Color4f{1.0f, 0.94f, 0.28f, 0.98f}
+			: gl2d::Color4f{1.0f, 0.74f, 0.22f, 0.95f};
 	}
 
 	renderer.renderRectangleOutline(
@@ -632,12 +1269,15 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 	if (ImGui::Begin("Editor"))
 	{
 		bool hasLoadedLevel = !currentLevelName.empty();
+		bool hasSelectedDoor = hasLoadedLevel &&
+			selectedDoorIndex >= 0 &&
+			selectedDoorIndex < static_cast<int>(room.doors.size());
 
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
 		ImGui::TextUnformatted("Ctrl+S saves the current level");
-		ImGui::TextUnformatted("Escape cancels an active rect or measure selection");
+		ImGui::TextUnformatted("Escape cancels rect, measure, or door drag input");
 		if (!hasLoadedLevel)
 		{
 			ImGui::TextColored({1.f, 0.88f, 0.35f, 1.f}, "Load or create a level file before editing.");
@@ -646,10 +1286,11 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		ImGui::Separator();
 		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
 		ImGui::TextUnformatted("Tools");
-		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; }
-		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; }
-		if (ImGui::RadioButton("Rect (3)", tool == rectTool)) { tool = rectTool; rectDragActive = false; }
-		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; }
+		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (ImGui::RadioButton("Rect (3)", tool == rectTool)) { tool = rectTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (ImGui::RadioButton("Door (5)", tool == doorTool)) { tool = doorTool; rectDragActive = false; doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
 
 		if (tool == noneTool)
 		{
@@ -662,6 +1303,10 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		else if (tool == measureTool)
 		{
 			ImGui::TextUnformatted("Drag to measure without editing");
+		}
+		else if (tool == doorTool)
+		{
+			ImGui::TextUnformatted("Ctrl+LMB empty tile adds, drag door moves, drag yellow spawn, drag corner resizes");
 		}
 		else
 		{
@@ -680,15 +1325,75 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 		ImGui::InputInt("Width", &pendingRoomSize.x);
 		ImGui::InputInt("Height", &pendingRoomSize.y);
-		if (ImGui::Button("Apply Resize"))
+		if (ImGui::Button("Resize Level"))
 		{
-			resizeRoom(room, pendingRoomSize.x, pendingRoomSize.y);
-			clampCamera(room, renderer);
+			pendingResizeConfirmSize = pendingRoomSize;
+			ImGui::OpenPopup("Resize Level");
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Focus Room"))
 		{
 			focusRoom(room, renderer);
+		}
+		if (!hasLoadedLevel) { ImGui::EndDisabled(); }
+
+		ImGui::Separator();
+		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
+		ImGui::TextUnformatted("Doors");
+		ImGui::Text("Count: %d", static_cast<int>(room.doors.size()));
+		if (hasSelectedDoor)
+		{
+			Door const &selectedDoor = room.doors[selectedDoorIndex];
+			ImGui::Text("Selected: %s", selectedDoor.name.c_str());
+			ImGui::InputText("Door Name", selectedDoorName, sizeof(selectedDoorName));
+			if (ImGui::Button("Apply Door Name"))
+			{
+				applySelectedDoorName(room);
+			}
+
+			int doorX = selectedDoor.position.x;
+			int doorY = selectedDoor.position.y;
+			int doorW = selectedDoor.size.x;
+			int doorH = selectedDoor.size.y;
+			bool movedDoor = false;
+			bool resizedDoor = false;
+
+			if (ImGui::InputInt("Door X", &doorX)) { movedDoor = true; }
+			if (ImGui::InputInt("Door Y", &doorY)) { movedDoor = true; }
+			if (ImGui::InputInt("Door Width", &doorW)) { resizedDoor = true; }
+			if (ImGui::InputInt("Door Height", &doorH)) { resizedDoor = true; }
+
+			if (movedDoor)
+			{
+				moveSelectedDoor(room, {doorX, doorY});
+			}
+			if (resizedDoor)
+			{
+				resizeSelectedDoor(room, {doorW, doorH});
+			}
+
+			ImGui::Text("Player Spawn: %d, %d",
+				selectedDoor.playerSpawnPosition.x,
+				selectedDoor.playerSpawnPosition.y);
+			ImGui::TextUnformatted("Drag the yellow spawn marker to move it.");
+
+			if (ImGui::Button("Delete Selected Door"))
+			{
+				deleteSelectedDoor(room);
+			}
+		}
+		else
+		{
+			ImGui::TextUnformatted("Selected: none");
+			ImGui::TextUnformatted("Pick Door (5) and Ctrl+click inside the room to add one.");
+		}
+
+		if (!doorActionMessage.empty())
+		{
+			ImVec4 doorColor = doorActionHasError
+				? ImVec4(1.f, 0.45f, 0.35f, 1.f)
+				: ImVec4(1.0f, 0.84f, 0.32f, 1.f);
+			ImGui::TextColored(doorColor, "%s", doorActionMessage.c_str());
 		}
 		if (!hasLoadedLevel) { ImGui::EndDisabled(); }
 
@@ -719,6 +1424,29 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 
 		ImGui::Text("Camera: %.2f, %.2f", camera.position.x, camera.position.y);
+
+		if (ImGui::BeginPopupModal("Resize Level", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Resize \"%s\" from %d x %d to %d x %d?",
+				currentLevelName.c_str(),
+				room.size.x,
+				room.size.y,
+				std::max(pendingResizeConfirmSize.x, 1),
+				std::max(pendingResizeConfirmSize.y, 1));
+
+			if (ImGui::Button("Apply", {120.f, 0.f}))
+			{
+				resizeRoom(room, pendingResizeConfirmSize.x, pendingResizeConfirmSize.y);
+				clampCamera(room, renderer);
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 	ImGui::End();
 #endif
@@ -734,16 +1462,7 @@ void LevelEditor::drawUnsavedChangesWindow(Room &room, gl2d::Renderer2D &rendere
 
 		if (ImGui::Button("Discard", {120.f, 0.f}))
 		{
-			if (pendingFileAction == loadSelectedFileAction)
-			{
-				loadSelectedLevel(room, renderer);
-			}
-			else if (pendingFileAction == createNewFileAction)
-			{
-				createNewLevel(room, renderer);
-			}
-
-			pendingFileAction = noPendingFileAction;
+			pendingApplyPendingFileAction = true;
 			ImGui::CloseCurrentPopup();
 		}
 		ImGui::SameLine();
@@ -770,6 +1489,28 @@ void LevelEditor::saveCurrentLevel(Room &room)
 
 	if (result.success)
 	{
+		for (auto const &rename : pendingDoorRenames)
+		{
+			if (!roomHasDoorNamed(room, rename.newName))
+			{
+				continue;
+			}
+
+			WorldIoResult worldResult = renameDoorReferencesInWorld(
+				currentLevelName.c_str(),
+				rename.oldName.c_str(),
+				rename.newName.c_str());
+
+			if (!worldResult.success)
+			{
+				fileActionHasError = true;
+				fileActionMessage = "Saved level, but couldn't update world door links: " + worldResult.message;
+				levelDirty = false;
+				return;
+			}
+		}
+
+		pendingDoorRenames.clear();
 		levelDirty = false;
 	}
 }
@@ -795,6 +1536,10 @@ void LevelEditor::loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer)
 		newLevelSize = room.size;
 		hoveredTileValid = false;
 		rectDragActive = false;
+		clearDoorSelection();
+		doorActionMessage.clear();
+		doorActionHasError = false;
+		pendingDoorRenames.clear();
 		levelDirty = false;
 		copyStringToBuffer(renameName, result.levelName);
 		focusRoom(room, renderer);
@@ -846,6 +1591,10 @@ void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
 		newLevelSize = room.size;
 		hoveredTileValid = false;
 		rectDragActive = false;
+		clearDoorSelection();
+		doorActionMessage.clear();
+		doorActionHasError = false;
+		pendingDoorRenames.clear();
 		levelDirty = false;
 		newLevelName[0] = 0;
 		copyStringToBuffer(renameName, result.levelName);
@@ -889,6 +1638,9 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 		renameName[0] = 0;
 		hoveredTileValid = false;
 		rectDragActive = false;
+		clearDoorSelection();
+		doorActionMessage.clear();
+		doorActionHasError = false;
 		levelDirty = false;
 	}
 
@@ -1075,6 +1827,10 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 						renameName[0] = 0;
 						hoveredTileValid = false;
 						rectDragActive = false;
+						clearDoorSelection();
+						doorActionMessage.clear();
+						doorActionHasError = false;
+						pendingDoorRenames.clear();
 						levelDirty = false;
 					}
 
@@ -1102,7 +1858,7 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 
 			if (ImGui::Button("Discard", {120.f, 0.f}))
 			{
-				reloadCurrentLevel(room, renderer);
+				pendingReloadCurrentLevel = true;
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::SameLine();
