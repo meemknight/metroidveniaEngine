@@ -306,6 +306,7 @@ static void handleSDLEvent(const SDL_Event &e)
 			if (key == SDLK_SPACE) platform::internal::setButtonState(platform::Button::Space, state);
 			if (key == SDLK_RETURN) platform::internal::setButtonState(platform::Button::Enter, state);
 			if (key == SDLK_ESCAPE) platform::internal::setButtonState(platform::Button::Escape, state);
+			if (key == SDLK_BACKSPACE) platform::internal::setButtonState(platform::Button::Backspace, state);
 			if (key == SDLK_UP) platform::internal::setButtonState(platform::Button::Up, state);
 			if (key == SDLK_DOWN) platform::internal::setButtonState(platform::Button::Down, state);
 			if (key == SDLK_LEFT) platform::internal::setButtonState(platform::Button::Left, state);

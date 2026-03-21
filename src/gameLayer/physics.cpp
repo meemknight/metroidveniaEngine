@@ -136,7 +136,7 @@ glm::vec2 PhysicalEntity::performCollision(Room &room, glm::vec2 pos, glm::vec2 
 	{
 		for (int x = minX; x < maxX; x++)
 		{
-			if (room.getBlockUnsafe(x, y).solid)
+			if (room.getBlockUnsafe(x, y).isSolid())
 			{
 				Transform2D entity;
 				entity.pos = pos;

@@ -62,10 +62,14 @@ struct Gameplay
 	void createStarterRoom();
 	void setDefaultSpawnPoint();
 	void setSpawnPointFromDoor(Door const &door);
+	void setSpawnPointFromSpawnRegion(SpawnRegion const &spawnRegion);
 	void loadLevel(char const *levelName);
 	bool refreshWorldData();
 	Door const *findDoorByName(Room const &room, std::string const &doorName);
 	Door const *findTouchedDoor();
+	SpawnRegion const *findTouchedSpawnRegion();
+	bool playerTouchesSpike();
+	void updateSpawnCheckpoint();
 	void updateDoorTransition();
 	bool travelThroughDoor(Door const &door);
 	void startDash(int direction);

@@ -109,7 +109,33 @@ namespace
 		{
 			for (int x = minX; x < maxX; x++)
 			{
-				if (!room.getBlockUnsafe(x, y).solid)
+				if (!room.getBlockUnsafe(x, y).isSolid())
+				{
+					continue;
+				}
+
+				if (aabbOverlaps(rect, {static_cast<float>(x), static_cast<float>(y), 1.f, 1.f}))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool roomRectHitsDanger(Room const &room, glm::vec4 rect)
+	{
+		int minX = std::max(static_cast<int>(std::floor(rect.x)), 0);
+		int minY = std::max(static_cast<int>(std::floor(rect.y)), 0);
+		int maxX = std::min(static_cast<int>(std::ceil(rect.x + rect.z)), room.size.x);
+		int maxY = std::min(static_cast<int>(std::ceil(rect.y + rect.w)), room.size.y);
+
+		for (int y = minY; y < maxY; y++)
+		{
+			for (int x = minX; x < maxX; x++)
+			{
+				if (!room.getBlockUnsafe(x, y).isDanger())
 				{
 					continue;
 				}
@@ -325,12 +351,12 @@ namespace
 
 			for (int y = minY; y <= maxY; y++)
 			{
-				if (!room.getBlockUnsafe(wallX, y).solid)
+				if (!room.getBlockUnsafe(wallX, y).isSolid())
 				{
 					continue;
 				}
 
-				if (y > 0 && room.getBlockUnsafe(wallX, y - 1).solid)
+				if (y > 0 && room.getBlockUnsafe(wallX, y - 1).isSolid())
 				{
 					continue;
 				}
@@ -510,7 +536,15 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 	updatePlayer(gameplayDeltaTime, moveInput, jumpPressed, jumpHeld, downPressed, dashPressed, sprintHeld);
 	if (!measureMode)
 	{
-		updateDoorTransition();
+		updateSpawnCheckpoint();
+		if (playerTouchesSpike())
+		{
+			respawnPlayer();
+		}
+		else
+		{
+			updateDoorTransition();
+		}
 	}
 
 	if (measureMode)
@@ -541,7 +575,7 @@ void Gameplay::fillSolidRect(int minX, int minY, int maxX, int maxY)
 		{
 			if (Block *block = room.getBlockSafe(x, y))
 			{
-				block->solid = true;
+				block->type = solidBlock;
 			}
 		}
 	}
@@ -599,6 +633,16 @@ void Gameplay::setSpawnPointFromDoor(Door const &door)
 	spawnPoint = {
 		door.playerSpawnPosition.x + 0.5f,
 		door.playerSpawnPosition.y + 1.f - kPlayerHeight * 0.5f
+	};
+}
+
+void Gameplay::setSpawnPointFromSpawnRegion(SpawnRegion const &spawnRegion)
+{
+	// Spawn regions use the same one-tile marker convention as door spawn points,
+	// so the player's feet land on the marker's bottom center.
+	spawnPoint = {
+		spawnRegion.spawnPosition.x + 0.5f,
+		spawnRegion.spawnPosition.y + 1.f - kPlayerHeight * 0.5f
 	};
 }
 
@@ -673,6 +717,36 @@ Door const *Gameplay::findTouchedDoor()
 	}
 
 	return {};
+}
+
+SpawnRegion const *Gameplay::findTouchedSpawnRegion()
+{
+	glm::vec4 playerBounds = player.physics.transform.getAABB();
+	for (SpawnRegion const &spawnRegion : room.spawnRegions)
+	{
+		for (SpawnRegionRect const &rect : spawnRegion.rects)
+		{
+			if (aabbOverlaps(playerBounds, rect.getRectF()))
+			{
+				return &spawnRegion;
+			}
+		}
+	}
+
+	return {};
+}
+
+bool Gameplay::playerTouchesSpike()
+{
+	return roomRectHitsDanger(room, player.physics.transform.getAABB());
+}
+
+void Gameplay::updateSpawnCheckpoint()
+{
+	if (SpawnRegion const *spawnRegion = findTouchedSpawnRegion())
+	{
+		setSpawnPointFromSpawnRegion(*spawnRegion);
+	}
 }
 
 void Gameplay::updateDoorTransition()
@@ -1755,7 +1829,8 @@ void Gameplay::updateCamera(int width, int height)
 void Gameplay::drawRoom(gl2d::Renderer2D &renderer)
 {
 	const gl2d::Color4f roomBackground = {0.10f, 0.11f, 0.15f, 1.f};
-	const gl2d::Color4f blockColor = {0.23f, 0.26f, 0.32f, 1.f};
+	const gl2d::Color4f solidBlockColor = {0.23f, 0.26f, 0.32f, 1.f};
+	const gl2d::Color4f spikeBlockColor = {0.86f, 0.18f, 0.20f, 1.f};
 	const gl2d::Color4f ziplineLineColor = {0.76f, 0.78f, 0.80f, 0.82f};
 	const gl2d::Color4f ziplinePointColor = {0.94f, 0.84f, 0.28f, 0.92f};
 	constexpr float ziplineLineWidth = 0.05f;
@@ -1767,12 +1842,15 @@ void Gameplay::drawRoom(gl2d::Renderer2D &renderer)
 	{
 		for (int x = 0; x < room.size.x; x++)
 		{
-			if (!room.getBlockUnsafe(x, y).solid)
+			Block const &block = room.getBlockUnsafe(x, y);
+			if (block.isEmpty())
 			{
 				continue;
 			}
 
-			renderer.renderRectangle({static_cast<float>(x), static_cast<float>(y), 1.f, 1.f}, blockColor);
+			renderer.renderRectangle(
+				{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
+				block.isSolid() ? solidBlockColor : spikeBlockColor);
 		}
 	}
 

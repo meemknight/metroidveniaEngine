@@ -46,6 +46,17 @@ struct WorldEditor
 		bool worldDirty = false;
 	};
 
+	// Temporary world-space rectangle for creating a brand-new level file from the world view.
+	struct PendingNewLevel
+	{
+		bool active = false;
+		bool naming = false;
+		bool resizeActive = false;
+		glm::vec4 rect = {};
+		std::string typedName = {};
+		glm::vec4 resizeStartRect = {};
+	};
+
 	void init();
 	void cleanup();
 	void enter(gl2d::Renderer2D &renderer);
@@ -100,6 +111,14 @@ struct WorldEditor
 	void undo(gl2d::Renderer2D &renderer);
 	void redo(gl2d::Renderer2D &renderer);
 	std::string getPlacedLevelAt(glm::vec2 worldPoint);
+	glm::vec4 makePendingNewLevelRect(glm::vec4 draggedRect) const;
+	glm::vec4 getPendingNewLevelResizeHandleRect() const;
+	void clearPendingNewLevel();
+	void beginPendingNewLevel(glm::vec4 draggedRect);
+	bool pendingNewLevelContains(glm::vec2 worldPoint) const;
+	bool pendingNewLevelResizeHandleContains(glm::vec2 worldPoint) const;
+	void updatePendingNewLevelTyping(platform::Input &input, gl2d::Renderer2D &renderer);
+	void tryCreatePendingNewLevel(gl2d::Renderer2D &renderer);
 	void drawWorld(gl2d::Renderer2D &renderer);
 	void drawGrid(gl2d::Renderer2D &renderer);
 	void drawLevels(gl2d::Renderer2D &renderer);
@@ -151,4 +170,5 @@ struct WorldEditor
 	std::vector<UndoSnapshot> undoHistory = {};
 	int undoHistoryIndex = -1;
 	bool applyingUndoRedo = false;
+	PendingNewLevel pendingNewLevel = {};
 };

@@ -20,6 +20,12 @@ namespace
 	const gl2d::Color4f kSelectedDoorOutlineColor = {1.0f, 0.78f, 0.28f, 1.0f};
 	const gl2d::Color4f kDoorSpawnFillColor = {1.0f, 0.88f, 0.18f, 0.24f};
 	const gl2d::Color4f kDoorSpawnOutlineColor = {1.0f, 0.92f, 0.32f, 0.96f};
+	const gl2d::Color4f kSpawnRegionFillColor = {0.26f, 0.56f, 1.0f, 0.08f};
+	const gl2d::Color4f kSpawnRegionOutlineColor = {0.38f, 0.68f, 1.0f, 0.34f};
+	const gl2d::Color4f kSelectedSpawnRegionFillColor = {0.32f, 0.62f, 1.0f, 0.14f};
+	const gl2d::Color4f kSelectedSpawnRegionOutlineColor = {0.58f, 0.82f, 1.0f, 0.92f};
+	const gl2d::Color4f kSpawnRegionPointFillColor = {0.44f, 0.74f, 1.0f, 0.20f};
+	const gl2d::Color4f kSpawnRegionPointOutlineColor = {0.62f, 0.86f, 1.0f, 0.92f};
 	const gl2d::Color4f kZiplineLineColor = {0.76f, 0.78f, 0.80f, 0.82f};
 	const gl2d::Color4f kSelectedZiplineLineColor = {0.92f, 0.94f, 0.98f, 1.0f};
 	const gl2d::Color4f kZiplinePointFillColor = {0.94f, 0.82f, 0.22f, 0.24f};
@@ -28,6 +34,7 @@ namespace
 	const gl2d::Color4f kSelectedZiplinePointOutlineColor = {1.0f, 0.96f, 0.42f, 1.0f};
 	constexpr float kZiplineLineWidth = 0.06f;
 	constexpr float kZiplinePointSize = 0.46f;
+	constexpr float kSpawnRegionPointSize = 0.42f;
 
 	template<size_t N>
 	void copyStringToBuffer(char (&buffer)[N], std::string const &text)
@@ -48,6 +55,23 @@ namespace
 		}
 
 		return text;
+	}
+
+	SpawnRegionRect makeSpawnRegionRect(glm::ivec2 a, glm::ivec2 b)
+	{
+		glm::ivec2 minCorner = {
+			std::min(a.x, b.x),
+			std::min(a.y, b.y)
+		};
+		glm::ivec2 maxCorner = {
+			std::max(a.x, b.x),
+			std::max(a.y, b.y)
+		};
+
+		SpawnRegionRect rect = {};
+		rect.position = minCorner;
+		rect.size = maxCorner - minCorner + glm::ivec2(1, 1);
+		return rect;
 	}
 
 	bool roomHasDoorNamed(Room const &room, std::string const &doorName)
@@ -154,6 +178,7 @@ namespace
 			ImGui::IsPopupOpen("Discard Current Changes") ||
 			ImGui::IsPopupOpen("Resize Level") ||
 			ImGui::IsPopupOpen("Delete Door") ||
+			ImGui::IsPopupOpen("Delete Spawn Region") ||
 			ImGui::IsPopupOpen("Delete Zipline");
 	}
 #endif
@@ -248,6 +273,10 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		{
 			clearDoorSelection();
 		}
+		if (selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+		{
+			clearSpawnRegionSelection();
+		}
 		if (selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
 		{
 			clearZiplineSelection();
@@ -264,6 +293,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		setViewCenter({}, renderer);
 		clearMoveSelection();
 		clearDoorSelection();
+		clearSpawnRegionSelection();
 		clearZiplineSelection();
 	}
 
@@ -279,6 +309,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		drawRoom(room, renderer);
 		drawGrid(room, renderer);
 		drawMoveSelection(renderer);
+		drawSpawnRegions(room, renderer);
 		drawDoors(room, renderer);
 		drawZiplines(room, renderer);
 		drawRectPreview(renderer);
@@ -434,6 +465,11 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		spawnRegionDragActive = false;
+		spawnRegionResizeActive = false;
+		spawnRegionSpawnDragActive = false;
+		spawnRegionCreateDragActive = false;
+		spawnRegionAddRectArmed = false;
 		ziplineCreateDragActive = false;
 		ziplinePointDragActive = false;
 		if (hadMoveOperation)
@@ -458,6 +494,11 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		spawnRegionDragActive = false;
+		spawnRegionResizeActive = false;
+		spawnRegionSpawnDragActive = false;
+		spawnRegionCreateDragActive = false;
+		spawnRegionAddRectArmed = false;
 		ziplineCreateDragActive = false;
 		ziplinePointDragActive = false;
 		clearMoveSelection();
@@ -540,6 +581,10 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		{
 			requestDeleteSelectedZipline(room);
 		}
+		else if (tool == spawnRegionTool)
+		{
+			requestDeleteSelectedSpawnRegion(room);
+		}
 		else
 		{
 			requestDeleteSelectedDoor(room);
@@ -555,6 +600,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 		return;
 	}
@@ -569,6 +616,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 	}
 #else
@@ -578,6 +627,11 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		spawnRegionDragActive = false;
+		spawnRegionResizeActive = false;
+		spawnRegionSpawnDragActive = false;
+		spawnRegionCreateDragActive = false;
+		spawnRegionAddRectArmed = false;
 		ziplineCreateDragActive = false;
 		ziplinePointDragActive = false;
 		clearMoveSelection();
@@ -628,6 +682,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 	if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
+	if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
+	if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 #endif
 }
@@ -641,6 +697,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		clearSpawnRegionSelection();
 		clearZiplineSelection();
 		return;
 	}
@@ -773,6 +830,202 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		createDoorAtHoveredTile(room);
 		doorDragActive = true;
 		doorDragGrabOffset = {};
+		return;
+	}
+
+	if (tool == spawnRegionTool)
+	{
+		if (selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+		{
+			clearSpawnRegionSelection();
+		}
+		else if (selectedSpawnRegionIndex >= 0)
+		{
+			SpawnRegion const &selectedRegion = room.spawnRegions[selectedSpawnRegionIndex];
+			if (selectedRegion.rects.empty())
+			{
+				clearSpawnRegionSelection();
+			}
+			else if (selectedSpawnRegionRectIndex < 0 ||
+				selectedSpawnRegionRectIndex >= static_cast<int>(selectedRegion.rects.size()))
+			{
+				selectedSpawnRegionRectIndex = 0;
+			}
+		}
+
+		if (spawnRegionSpawnDragActive)
+		{
+			if (selectedSpawnRegionIndex < 0 ||
+				selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+			{
+				clearSpawnRegionSelection();
+				return;
+			}
+
+			if (!input.isLMouseHeld())
+			{
+				spawnRegionSpawnDragActive = false;
+				pushUndoSnapshot(room);
+				return;
+			}
+
+			if (hoveredTileValid)
+			{
+				moveSelectedSpawnRegionSpawn(room, hoveredTile);
+			}
+
+			return;
+		}
+
+		if (spawnRegionDragActive || spawnRegionResizeActive)
+		{
+			if (!input.isLMouseHeld())
+			{
+				if (spawnRegionDragActive || spawnRegionResizeActive)
+				{
+					pushUndoSnapshot(room);
+				}
+				spawnRegionDragActive = false;
+				spawnRegionResizeActive = false;
+				return;
+			}
+
+			if (selectedSpawnRegionIndex < 0 ||
+				selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+			{
+				clearSpawnRegionSelection();
+				return;
+			}
+
+			SpawnRegion const &selectedRegion = room.spawnRegions[selectedSpawnRegionIndex];
+			if (selectedSpawnRegionRectIndex < 0 ||
+				selectedSpawnRegionRectIndex >= static_cast<int>(selectedRegion.rects.size()))
+			{
+				clearSpawnRegionSelection();
+				return;
+			}
+
+			if (spawnRegionResizeActive)
+			{
+				SpawnRegionRect const &selectedRect = selectedRegion.rects[selectedSpawnRegionRectIndex];
+				glm::ivec2 newSize = {
+					static_cast<int>(std::floor(mouseWorldPosition.x)) - selectedRect.position.x + 1,
+					static_cast<int>(std::floor(mouseWorldPosition.y)) - selectedRect.position.y + 1
+				};
+				resizeSelectedSpawnRegionRect(room, newSize);
+			}
+			else if (hoveredTileValid)
+			{
+				moveSelectedSpawnRegion(room, hoveredTile - spawnRegionDragGrabOffset);
+			}
+
+			return;
+		}
+
+		if (spawnRegionCreateDragActive)
+		{
+			if (hoveredTileValid)
+			{
+				spawnRegionCreateEnd = hoveredTile;
+			}
+
+			if (input.isLMouseReleased())
+			{
+				spawnRegionCreateDragActive = false;
+
+				if (hoveredTileValid)
+				{
+					if (spawnRegionAddRectArmed &&
+						selectedSpawnRegionIndex >= 0 &&
+						selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()))
+					{
+						addRectToSelectedSpawnRegion(room, spawnRegionCreateStart, spawnRegionCreateEnd);
+					}
+					else
+					{
+						createSpawnRegion(room, spawnRegionCreateStart, spawnRegionCreateEnd);
+					}
+					pushUndoSnapshot(room);
+				}
+
+				spawnRegionAddRectArmed = false;
+			}
+
+			return;
+		}
+
+		if (!input.isLMousePressed())
+		{
+			return;
+		}
+
+		int hoveredSpawnRegionIndex = getHoveredSpawnRegionSpawnIndex(room, mouseWorldPosition);
+		if (hoveredSpawnRegionIndex >= 0)
+		{
+			selectedSpawnRegionIndex = hoveredSpawnRegionIndex;
+			if (selectedSpawnRegionRectIndex < 0 ||
+				selectedSpawnRegionRectIndex >= static_cast<int>(room.spawnRegions[selectedSpawnRegionIndex].rects.size()))
+			{
+				selectedSpawnRegionRectIndex = 0;
+			}
+			spawnRegionActionMessage.clear();
+			spawnRegionActionHasError = false;
+			spawnRegionSpawnDragActive = true;
+			return;
+		}
+
+		int hoveredRegionIndex = -1;
+		int hoveredRegionRectIndex = -1;
+		if (getHoveredSpawnRegionRect(room, mouseWorldPosition, hoveredRegionIndex, hoveredRegionRectIndex))
+		{
+			selectedSpawnRegionIndex = hoveredRegionIndex;
+			selectedSpawnRegionRectIndex = hoveredRegionRectIndex;
+			spawnRegionActionMessage.clear();
+			spawnRegionActionHasError = false;
+
+			if (hoveredSelectedSpawnRegionResizeHandle(room, mouseWorldPosition))
+			{
+				spawnRegionResizeActive = true;
+			}
+			else if (hoveredTileValid)
+			{
+				spawnRegionDragActive = true;
+				spawnRegionDragGrabOffset =
+					hoveredTile - room.spawnRegions[selectedSpawnRegionIndex].rects[selectedSpawnRegionRectIndex].position;
+			}
+
+			return;
+		}
+
+		if (!hoveredTileValid)
+		{
+			clearSpawnRegionSelection();
+			spawnRegionAddRectArmed = false;
+			return;
+		}
+
+		if (spawnRegionAddRectArmed &&
+			selectedSpawnRegionIndex >= 0 &&
+			selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()))
+		{
+			spawnRegionCreateDragActive = true;
+			spawnRegionCreateStart = hoveredTile;
+			spawnRegionCreateEnd = hoveredTile;
+			return;
+		}
+
+		if (input.isButtonHeld(platform::Button::LeftCtrl))
+		{
+			clearSpawnRegionSelection();
+			spawnRegionCreateDragActive = true;
+			spawnRegionCreateStart = hoveredTile;
+			spawnRegionCreateEnd = hoveredTile;
+			spawnRegionAddRectArmed = false;
+			return;
+		}
+
+		clearSpawnRegionSelection();
+		spawnRegionAddRectArmed = false;
 		return;
 	}
 
@@ -950,12 +1203,12 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 
 		if (input.isLMouseHeld() && hoveredTileValid)
 		{
-			setBlock(room, hoveredTile.x, hoveredTile.y, true);
+			setBlock(room, hoveredTile.x, hoveredTile.y, solidBlock);
 		}
 
 		if (input.isRMouseHeld() && hoveredTileValid)
 		{
-			setBlock(room, hoveredTile.x, hoveredTile.y, false);
+			setBlock(room, hoveredTile.x, hoveredTile.y, emptyBlock);
 		}
 
 		if (brushPaintActive && (input.isLMouseReleased() || input.isRMouseReleased()))
@@ -1011,28 +1264,55 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 
 		if (released)
 		{
-			fillRect(room, rectDragStart, rectDragEnd, rectDragPlacesSolid);
+			fillRect(room, rectDragStart, rectDragEnd, rectDragPlacesSolid ? solidBlock : emptyBlock);
+			rectDragActive = false;
+			pushUndoSnapshot(room);
+		}
+	}
+	else if (tool == spikeTool)
+	{
+		brushPaintActive = false;
+		if ((input.isLMousePressed() || input.isRMousePressed()) && hoveredTileValid)
+		{
+			rectDragActive = true;
+			rectDragPlacesSolid = input.isLMousePressed();
+			rectDragStart = hoveredTile;
+			rectDragEnd = hoveredTile;
+		}
+
+		if (rectDragActive && hoveredTileValid)
+		{
+			rectDragEnd = hoveredTile;
+		}
+
+		bool released = false;
+		if (rectDragActive && rectDragPlacesSolid && input.isLMouseReleased()) { released = true; }
+		if (rectDragActive && !rectDragPlacesSolid && input.isRMouseReleased()) { released = true; }
+
+		if (released)
+		{
+			fillRect(room, rectDragStart, rectDragEnd, rectDragPlacesSolid ? spikeBlock : emptyBlock);
 			rectDragActive = false;
 			pushUndoSnapshot(room);
 		}
 	}
 }
 
-void LevelEditor::setBlock(Room &room, int x, int y, bool solid)
+void LevelEditor::setBlock(Room &room, int x, int y, BlockType type)
 {
 	if (Block *block = room.getBlockSafe(x, y))
 	{
-		if (block->solid == solid)
+		if (block->type == type)
 		{
 			return;
 		}
 
-		block->solid = solid;
+		block->type = type;
 		levelDirty = true;
 	}
 }
 
-void LevelEditor::fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, bool solid)
+void LevelEditor::fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, BlockType type)
 {
 	int minX = std::min(a.x, b.x);
 	int minY = std::min(a.y, b.y);
@@ -1043,7 +1323,7 @@ void LevelEditor::fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, bool solid)
 	{
 		for (int x = minX; x <= maxX; x++)
 		{
-			setBlock(room, x, y, solid);
+			setBlock(room, x, y, type);
 		}
 	}
 }
@@ -1077,6 +1357,11 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	{
 		clampDoorToRoom(door, resizedRoom);
 	}
+	resizedRoom.spawnRegions = room.spawnRegions;
+	for (SpawnRegion &spawnRegion : resizedRoom.spawnRegions)
+	{
+		clampSpawnRegionToRoom(spawnRegion, resizedRoom);
+	}
 	resizedRoom.ziplines = room.ziplines;
 	for (Zipline &zipline : resizedRoom.ziplines)
 	{
@@ -1090,6 +1375,7 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	clearMoveSelection();
 	doorDragActive = false;
 	doorResizeActive = false;
+	clearSpawnRegionSelection();
 	ziplineCreateDragActive = false;
 	ziplinePointDragActive = false;
 	if (selectedDoorIndex >= static_cast<int>(room.doors.size()))
@@ -1099,6 +1385,10 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	else
 	{
 		syncSelectedDoorBuffer(room);
+	}
+	if (selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		clearSpawnRegionSelection();
 	}
 	if (selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
 	{
@@ -1141,19 +1431,19 @@ void LevelEditor::createMoveSelection(Room &room, glm::ivec2 a, glm::ivec2 b)
 	moveSelection.sourceStart = {minX, minY};
 	moveSelection.size = {maxX - minX + 1, maxY - minY + 1};
 	moveSelection.previewPosition = moveSelection.sourceStart;
-	moveSelection.solidMask.resize(moveSelection.size.x * moveSelection.size.y, 0);
+	moveSelection.blockTypes.resize(moveSelection.size.x * moveSelection.size.y, emptyBlock);
 
 	for (int y = 0; y < moveSelection.size.y; y++)
 	{
 		for (int x = 0; x < moveSelection.size.x; x++)
 		{
 			Block const *block = room.getBlockSafe(moveSelection.sourceStart.x + x, moveSelection.sourceStart.y + y);
-			if (!block || !block->solid)
+			if (!block || block->isEmpty())
 			{
 				continue;
 			}
 
-			moveSelection.solidMask[x + y * moveSelection.size.x] = 1;
+			moveSelection.blockTypes[x + y * moveSelection.size.x] = block->type;
 		}
 	}
 }
@@ -1193,14 +1483,21 @@ void LevelEditor::commitMoveSelection(Room &room)
 		return;
 	}
 
-	std::vector<glm::ivec2> sourceSolidBlocks = {};
-	std::vector<glm::ivec2> destinationSolidBlocks = {};
+	struct Placement
+	{
+		glm::ivec2 source = {};
+		glm::ivec2 destination = {};
+		BlockType type = emptyBlock;
+	};
+
+	std::vector<Placement> placements = {};
 
 	for (int y = 0; y < moveSelection.size.y; y++)
 	{
 		for (int x = 0; x < moveSelection.size.x; x++)
 		{
-			if (!moveSelection.solidMask[x + y * moveSelection.size.x])
+			BlockType type = moveSelection.blockTypes[x + y * moveSelection.size.x];
+			if (type == emptyBlock)
 			{
 				continue;
 			}
@@ -1208,35 +1505,37 @@ void LevelEditor::commitMoveSelection(Room &room)
 			glm::ivec2 sourcePosition = moveSelection.sourceStart + glm::ivec2(x, y);
 			glm::ivec2 destinationPosition = moveSelection.previewPosition + glm::ivec2(x, y);
 
-			if (room.getBlockSafe(sourcePosition.x, sourcePosition.y))
-			{
-				sourceSolidBlocks.push_back(sourcePosition);
-			}
-
 			if (room.getBlockSafe(destinationPosition.x, destinationPosition.y))
 			{
-				destinationSolidBlocks.push_back(destinationPosition);
+				placements.push_back({sourcePosition, destinationPosition, type});
 			}
 		}
 	}
 
 	auto containsDestination = [&](glm::ivec2 tile)
 	{
-		return std::find(destinationSolidBlocks.begin(), destinationSolidBlocks.end(), tile) !=
-			destinationSolidBlocks.end();
+		for (Placement const &placement : placements)
+		{
+			if (placement.destination == tile)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	};
 
-	for (auto const &sourcePosition : sourceSolidBlocks)
+	for (Placement const &placement : placements)
 	{
-		if (!containsDestination(sourcePosition))
+		if (!containsDestination(placement.source))
 		{
-			setBlock(room, sourcePosition.x, sourcePosition.y, false);
+			setBlock(room, placement.source.x, placement.source.y, emptyBlock);
 		}
 	}
 
-	for (auto const &destinationPosition : destinationSolidBlocks)
+	for (Placement const &placement : placements)
 	{
-		setBlock(room, destinationPosition.x, destinationPosition.y, true);
+		setBlock(room, placement.destination.x, placement.destination.y, placement.type);
 	}
 
 	clearMoveSelection();
@@ -1253,13 +1552,25 @@ void LevelEditor::clearDoorSelection()
 	selectedDoorName[0] = 0;
 }
 
+void LevelEditor::clearSpawnRegionSelection()
+{
+	selectedSpawnRegionIndex = -1;
+	selectedSpawnRegionRectIndex = -1;
+	spawnRegionDragActive = false;
+	spawnRegionResizeActive = false;
+	spawnRegionSpawnDragActive = false;
+	spawnRegionCreateDragActive = false;
+	spawnRegionAddRectArmed = false;
+	spawnRegionDragGrabOffset = {};
+	pendingDeleteSpawnRegionIndex = -1;
+}
+
 void LevelEditor::clearZiplineSelection()
 {
 	selectedZiplineIndex = -1;
 	selectedZiplinePoint = -1;
 	ziplineCreateDragActive = false;
 	ziplinePointDragActive = false;
-	pendingDeleteZiplineIndex = -1;
 }
 
 int LevelEditor::getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld)
@@ -1319,6 +1630,102 @@ bool LevelEditor::hoveredSelectedDoorResizeHandle(Room &room, glm::vec2 mouseWor
 	Door const &door = room.doors[selectedDoorIndex];
 	glm::vec2 handleMin = glm::vec2(door.position) + glm::vec2(door.size) - glm::vec2(0.60f);
 	glm::vec2 handleMax = glm::vec2(door.position) + glm::vec2(door.size) + glm::vec2(0.25f);
+
+	return
+		mouseWorld.x >= handleMin.x &&
+		mouseWorld.y >= handleMin.y &&
+		mouseWorld.x <= handleMax.x &&
+		mouseWorld.y <= handleMax.y;
+}
+
+bool LevelEditor::getHoveredSpawnRegionRect(Room &room, glm::vec2 mouseWorld, int &regionIndex, int &rectIndex)
+{
+	if (selectedSpawnRegionIndex >= 0 && selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()))
+	{
+		SpawnRegion const &selectedRegion = room.spawnRegions[selectedSpawnRegionIndex];
+		if (selectedSpawnRegionRectIndex >= 0 &&
+			selectedSpawnRegionRectIndex < static_cast<int>(selectedRegion.rects.size()) &&
+			selectedRegion.rects[selectedSpawnRegionRectIndex].contains(mouseWorld))
+		{
+			regionIndex = selectedSpawnRegionIndex;
+			rectIndex = selectedSpawnRegionRectIndex;
+			return true;
+		}
+
+		for (int i = static_cast<int>(selectedRegion.rects.size()) - 1; i >= 0; i--)
+		{
+			if (selectedRegion.rects[i].contains(mouseWorld))
+			{
+				regionIndex = selectedSpawnRegionIndex;
+				rectIndex = i;
+				return true;
+			}
+		}
+	}
+
+	for (int region = static_cast<int>(room.spawnRegions.size()) - 1; region >= 0; region--)
+	{
+		for (int rect = static_cast<int>(room.spawnRegions[region].rects.size()) - 1; rect >= 0; rect--)
+		{
+			if (room.spawnRegions[region].rects[rect].contains(mouseWorld))
+			{
+				regionIndex = region;
+				rectIndex = rect;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+int LevelEditor::getHoveredSpawnRegionSpawnIndex(Room &room, glm::vec2 mouseWorld)
+{
+	auto spawnContains = [&](SpawnRegion const &spawnRegion)
+	{
+		return
+			mouseWorld.x >= spawnRegion.spawnPosition.x &&
+			mouseWorld.y >= spawnRegion.spawnPosition.y &&
+			mouseWorld.x <= spawnRegion.spawnPosition.x + 1 &&
+			mouseWorld.y <= spawnRegion.spawnPosition.y + 1;
+	};
+
+	if (selectedSpawnRegionIndex >= 0 &&
+		selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()) &&
+		spawnContains(room.spawnRegions[selectedSpawnRegionIndex]))
+	{
+		return selectedSpawnRegionIndex;
+	}
+
+	for (int i = static_cast<int>(room.spawnRegions.size()) - 1; i >= 0; i--)
+	{
+		if (spawnContains(room.spawnRegions[i]))
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+bool LevelEditor::hoveredSelectedSpawnRegionResizeHandle(Room &room, glm::vec2 mouseWorld)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return false;
+	}
+
+	SpawnRegion const &spawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+	if (selectedSpawnRegionRectIndex < 0 ||
+		selectedSpawnRegionRectIndex >= static_cast<int>(spawnRegion.rects.size()))
+	{
+		return false;
+	}
+
+	SpawnRegionRect const &rect = spawnRegion.rects[selectedSpawnRegionRectIndex];
+	glm::vec2 handleMin = glm::vec2(rect.position) + glm::vec2(rect.size) - glm::vec2(0.60f);
+	glm::vec2 handleMax = glm::vec2(rect.position) + glm::vec2(rect.size) + glm::vec2(0.25f);
 
 	return
 		mouseWorld.x >= handleMin.x &&
@@ -1521,6 +1928,193 @@ void LevelEditor::moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position)
 	levelDirty = true;
 }
 
+void LevelEditor::createSpawnRegion(Room &room, glm::ivec2 a, glm::ivec2 b)
+{
+	SpawnRegionRect rect = makeSpawnRegionRect(a, b);
+	clampSpawnRegionRectToRoom(rect, room);
+
+	SpawnRegion spawnRegion = {};
+	spawnRegion.spawnPosition = rect.position;
+	spawnRegion.rects.push_back(rect);
+	clampSpawnRegionToRoom(spawnRegion, room);
+
+	room.spawnRegions.push_back(spawnRegion);
+	selectedSpawnRegionIndex = static_cast<int>(room.spawnRegions.size()) - 1;
+	selectedSpawnRegionRectIndex = 0;
+	spawnRegionActionHasError = false;
+	spawnRegionActionMessage = "Created spawn region";
+	levelDirty = true;
+}
+
+void LevelEditor::addRectToSelectedSpawnRegion(Room &room, glm::ivec2 a, glm::ivec2 b)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	SpawnRegionRect rect = makeSpawnRegionRect(a, b);
+	clampSpawnRegionRectToRoom(rect, room);
+
+	SpawnRegion &spawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+	spawnRegion.rects.push_back(rect);
+	selectedSpawnRegionRectIndex = static_cast<int>(spawnRegion.rects.size()) - 1;
+	spawnRegionActionHasError = false;
+	spawnRegionActionMessage = "Added rectangle to spawn region";
+	levelDirty = true;
+}
+
+void LevelEditor::moveSelectedSpawnRegion(Room &room, glm::ivec2 position)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	SpawnRegion &spawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+	if (selectedSpawnRegionRectIndex < 0 ||
+		selectedSpawnRegionRectIndex >= static_cast<int>(spawnRegion.rects.size()))
+	{
+		return;
+	}
+
+	// Multi-rect spawn regions share one spawn point, but dragging should only
+	// reposition the rectangle that was actually selected.
+	SpawnRegionRect &selectedRect = spawnRegion.rects[selectedSpawnRegionRectIndex];
+	glm::ivec2 clampedPosition = {
+		std::clamp(position.x, 0, std::max(room.size.x - selectedRect.size.x, 0)),
+		std::clamp(position.y, 0, std::max(room.size.y - selectedRect.size.y, 0))
+	};
+
+	if (selectedRect.position == clampedPosition)
+	{
+		return;
+	}
+
+	selectedRect.position = clampedPosition;
+	spawnRegionActionHasError = false;
+	spawnRegionActionMessage = "Moved selected spawn region rectangle";
+	levelDirty = true;
+}
+
+void LevelEditor::resizeSelectedSpawnRegionRect(Room &room, glm::ivec2 size)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	SpawnRegion &spawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+	if (selectedSpawnRegionRectIndex < 0 ||
+		selectedSpawnRegionRectIndex >= static_cast<int>(spawnRegion.rects.size()))
+	{
+		return;
+	}
+
+	SpawnRegionRect &rect = spawnRegion.rects[selectedSpawnRegionRectIndex];
+	glm::ivec2 clampedSize = {
+		std::clamp(size.x, 1, std::max(room.size.x - rect.position.x, 1)),
+		std::clamp(size.y, 1, std::max(room.size.y - rect.position.y, 1))
+	};
+
+	if (rect.size == clampedSize)
+	{
+		return;
+	}
+
+	rect.size = clampedSize;
+	levelDirty = true;
+}
+
+void LevelEditor::moveSelectedSpawnRegionSpawn(Room &room, glm::ivec2 position)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	glm::ivec2 clampedPosition = {
+		std::clamp(position.x, 0, std::max(room.size.x - 1, 0)),
+		std::clamp(position.y, 0, std::max(room.size.y - 1, 0))
+	};
+
+	SpawnRegion &spawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+	if (spawnRegion.spawnPosition == clampedPosition)
+	{
+		return;
+	}
+
+	spawnRegion.spawnPosition = clampedPosition;
+	spawnRegionActionHasError = false;
+	spawnRegionActionMessage = "Moved spawn region point";
+	levelDirty = true;
+}
+
+void LevelEditor::removeSelectedSpawnRegionRect(Room &room)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	SpawnRegion &spawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+	if (selectedSpawnRegionRectIndex < 0 ||
+		selectedSpawnRegionRectIndex >= static_cast<int>(spawnRegion.rects.size()))
+	{
+		return;
+	}
+
+	if (spawnRegion.rects.size() <= 1)
+	{
+		spawnRegionActionHasError = true;
+		spawnRegionActionMessage = "Use delete to remove the last rectangle";
+		return;
+	}
+
+	spawnRegion.rects.erase(spawnRegion.rects.begin() + selectedSpawnRegionRectIndex);
+	selectedSpawnRegionRectIndex = std::clamp(
+		selectedSpawnRegionRectIndex,
+		0,
+		static_cast<int>(spawnRegion.rects.size()) - 1);
+	spawnRegionActionHasError = false;
+	spawnRegionActionMessage = "Removed rectangle from spawn region";
+	levelDirty = true;
+	pushUndoSnapshot(room);
+}
+
+void LevelEditor::requestDeleteSelectedSpawnRegion(Room &room)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	pendingDeleteSpawnRegionIndex = selectedSpawnRegionIndex;
+	pendingOpenDeleteSpawnRegionPopup = true;
+}
+
+void LevelEditor::deleteSelectedSpawnRegion(Room &room)
+{
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
+	{
+		return;
+	}
+
+	room.spawnRegions.erase(room.spawnRegions.begin() + selectedSpawnRegionIndex);
+	clearSpawnRegionSelection();
+	spawnRegionActionHasError = false;
+	spawnRegionActionMessage = "Deleted selected spawn region";
+	levelDirty = true;
+	pushUndoSnapshot(room);
+}
+
 void LevelEditor::createZipline(Room &room, glm::ivec2 firstPoint, glm::ivec2 secondPoint)
 {
 	Zipline zipline = {};
@@ -1572,15 +2166,17 @@ void LevelEditor::requestDeleteSelectedZipline(Room &room)
 	pendingOpenDeleteZiplinePopup = true;
 }
 
-void LevelEditor::deleteSelectedZipline(Room &room)
+void LevelEditor::deleteSelectedZipline(Room &room, int ziplineIndex)
 {
-	if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+	if (ziplineIndex < 0 || ziplineIndex >= static_cast<int>(room.ziplines.size()))
 	{
 		return;
 	}
 
-	room.ziplines.erase(room.ziplines.begin() + selectedZiplineIndex);
+	room.ziplines.erase(room.ziplines.begin() + ziplineIndex);
 	clearZiplineSelection();
+	pendingDeleteZiplineIndex = -1;
+	pendingOpenDeleteZiplinePopup = false;
 	doorActionHasError = false;
 	doorActionMessage = "Deleted selected zipline";
 	levelDirty = true;
@@ -1645,6 +2241,33 @@ void LevelEditor::clampDoorToRoom(Door &door, Room const &room)
 	door.playerSpawnPosition.y = std::clamp(door.playerSpawnPosition.y, 0, std::max(room.size.y - 1, 0));
 }
 
+void LevelEditor::clampSpawnRegionRectToRoom(SpawnRegionRect &rect, Room const &room)
+{
+	rect.position.x = std::clamp(rect.position.x, 0, std::max(room.size.x - 1, 0));
+	rect.position.y = std::clamp(rect.position.y, 0, std::max(room.size.y - 1, 0));
+	rect.size.x = std::clamp(rect.size.x, 1, std::max(room.size.x - rect.position.x, 1));
+	rect.size.y = std::clamp(rect.size.y, 1, std::max(room.size.y - rect.position.y, 1));
+}
+
+void LevelEditor::clampSpawnRegionToRoom(SpawnRegion &spawnRegion, Room const &room)
+{
+	spawnRegion.spawnPosition.x = std::clamp(spawnRegion.spawnPosition.x, 0, std::max(room.size.x - 1, 0));
+	spawnRegion.spawnPosition.y = std::clamp(spawnRegion.spawnPosition.y, 0, std::max(room.size.y - 1, 0));
+
+	if (spawnRegion.rects.empty())
+	{
+		SpawnRegionRect rect = {};
+		rect.position = spawnRegion.spawnPosition;
+		rect.size = {1, 1};
+		spawnRegion.rects.push_back(rect);
+	}
+
+	for (SpawnRegionRect &rect : spawnRegion.rects)
+	{
+		clampSpawnRegionRectToRoom(rect, room);
+	}
+}
+
 void LevelEditor::clampZiplineToRoom(Zipline &zipline, Room const &room)
 {
 	for (glm::ivec2 &point : zipline.points)
@@ -1690,7 +2313,8 @@ void LevelEditor::clampCamera(Room &room, gl2d::Renderer2D &renderer)
 void LevelEditor::drawRoom(Room &room, gl2d::Renderer2D &renderer)
 {
 	const gl2d::Color4f roomBackground = {0.08f, 0.10f, 0.13f, 1.f};
-	const gl2d::Color4f blockColor = {0.32f, 0.40f, 0.50f, 1.f};
+	const gl2d::Color4f solidBlockColor = {0.32f, 0.40f, 0.50f, 1.f};
+	const gl2d::Color4f spikeBlockColor = {0.86f, 0.18f, 0.20f, 1.f};
 
 	renderer.renderRectangle({0.f, 0.f, static_cast<float>(room.size.x), static_cast<float>(room.size.y)}, roomBackground);
 
@@ -1698,12 +2322,15 @@ void LevelEditor::drawRoom(Room &room, gl2d::Renderer2D &renderer)
 	{
 		for (int x = 0; x < room.size.x; x++)
 		{
-			if (!room.getBlockUnsafe(x, y).solid)
+			Block const &block = room.getBlockUnsafe(x, y);
+			if (block.isEmpty())
 			{
 				continue;
 			}
 
-			renderer.renderRectangle({static_cast<float>(x), static_cast<float>(y), 1.f, 1.f}, blockColor);
+			renderer.renderRectangle(
+				{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
+				block.isSolid() ? solidBlockColor : spikeBlockColor);
 		}
 	}
 }
@@ -1836,6 +2463,62 @@ void LevelEditor::drawDoors(Room &room, gl2d::Renderer2D &renderer)
 	renderer.popCamera();
 }
 
+void LevelEditor::drawSpawnRegions(Room &room, gl2d::Renderer2D &renderer)
+{
+	// Spawn regions stay lightly visible so they can be laid out against the room
+	// without fighting the stronger door and zipline overlays.
+	for (int regionIndex = 0; regionIndex < static_cast<int>(room.spawnRegions.size()); regionIndex++)
+	{
+		SpawnRegion const &spawnRegion = room.spawnRegions[regionIndex];
+		bool selected = regionIndex == selectedSpawnRegionIndex;
+		gl2d::Color4f fillColor = selected ? kSelectedSpawnRegionFillColor : kSpawnRegionFillColor;
+		gl2d::Color4f outlineColor = selected ? kSelectedSpawnRegionOutlineColor : kSpawnRegionOutlineColor;
+		gl2d::Color4f pointFillColor = selected ? gl2d::Color4f{0.58f, 0.84f, 1.0f, 0.30f} : kSpawnRegionPointFillColor;
+		gl2d::Color4f pointOutlineColor = selected ? gl2d::Color4f{0.72f, 0.92f, 1.0f, 1.0f} : kSpawnRegionPointOutlineColor;
+		glm::vec2 spawnCenter = glm::vec2(spawnRegion.spawnPosition) + glm::vec2(0.5f, 0.5f);
+
+		for (int rectIndex = 0; rectIndex < static_cast<int>(spawnRegion.rects.size()); rectIndex++)
+		{
+			SpawnRegionRect const &rect = spawnRegion.rects[rectIndex];
+			bool selectedRect = selected && rectIndex == selectedSpawnRegionRectIndex;
+			renderer.renderRectangle(rect.getRectF(), fillColor);
+			renderer.renderRectangleOutline(rect.getRectF(), outlineColor, selectedRect ? 0.11f : 0.07f);
+			renderer.renderLine(
+				spawnCenter,
+				glm::vec2(rect.position) + glm::vec2(rect.size) * 0.5f,
+				outlineColor,
+				selectedRect ? 0.08f : 0.05f);
+
+			if (selectedRect && tool == spawnRegionTool)
+			{
+				renderer.renderRectangle(
+					{
+						rect.position.x + rect.size.x - 0.46f,
+						rect.position.y + rect.size.y - 0.46f,
+						0.34f,
+						0.34f
+					},
+					kSelectedSpawnRegionOutlineColor);
+			}
+		}
+
+		renderer.renderRectangle(spawnRegion.getSpawnRectF(), pointFillColor);
+		renderer.renderRectangleOutline(
+			spawnRegion.getSpawnRectF(),
+			pointOutlineColor,
+			selected && spawnRegionSpawnDragActive ? 0.12f : 0.08f);
+	}
+
+	if (!spawnRegionCreateDragActive)
+	{
+		return;
+	}
+
+	SpawnRegionRect previewRect = makeSpawnRegionRect(spawnRegionCreateStart, spawnRegionCreateEnd);
+	renderer.renderRectangle(previewRect.getRectF(), {0.44f, 0.72f, 1.0f, 0.10f});
+	renderer.renderRectangleOutline(previewRect.getRectF(), {0.72f, 0.90f, 1.0f, 0.92f}, 0.08f);
+}
+
 void LevelEditor::drawZiplines(Room &room, gl2d::Renderer2D &renderer)
 {
 	// Ziplines stay visible while editing so their travel path is easy to line up
@@ -1955,7 +2638,8 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 	{
 		for (int x = 0; x < moveSelection.size.x; x++)
 		{
-			if (!moveSelection.solidMask[x + y * moveSelection.size.x])
+			BlockType type = moveSelection.blockTypes[x + y * moveSelection.size.x];
+			if (type == emptyBlock)
 			{
 				continue;
 			}
@@ -1967,7 +2651,9 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 					1.f,
 					1.f
 				},
-				{0.28f, 0.82f, 1.0f, 0.14f});
+				type == spikeBlock
+					? gl2d::Color4f{1.0f, 0.34f, 0.30f, 0.16f}
+					: gl2d::Color4f{0.28f, 0.82f, 1.0f, 0.14f});
 		}
 	}
 
@@ -1988,7 +2674,8 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 	{
 		for (int x = 0; x < moveSelection.size.x; x++)
 		{
-			if (!moveSelection.solidMask[x + y * moveSelection.size.x])
+			BlockType type = moveSelection.blockTypes[x + y * moveSelection.size.x];
+			if (type == emptyBlock)
 			{
 				continue;
 			}
@@ -2000,7 +2687,9 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 					1.f,
 					1.f
 				},
-				{0.22f, 1.0f, 0.72f, 0.24f});
+				type == spikeBlock
+					? gl2d::Color4f{1.0f, 0.36f, 0.32f, 0.26f}
+					: gl2d::Color4f{0.22f, 1.0f, 0.72f, 0.24f});
 		}
 	}
 }
@@ -2021,6 +2710,12 @@ void LevelEditor::drawRectPreview(gl2d::Renderer2D &renderer)
 	{
 		previewColor = {0.28f, 0.68f, 1.0f, 0.95f};
 	}
+	if (tool == spikeTool)
+	{
+		previewColor = rectDragPlacesSolid
+			? gl2d::Color4f{1.0f, 0.30f, 0.26f, 0.95f}
+			: gl2d::Color4f{1.0f, 0.28f, 0.22f, 0.9f};
+	}
 	if (tool == moveTool)
 	{
 		previewColor = {0.28f, 0.82f, 1.0f, 0.95f};
@@ -2031,7 +2726,7 @@ void LevelEditor::drawRectPreview(gl2d::Renderer2D &renderer)
 
 void LevelEditor::drawMeasureText(gl2d::Renderer2D &renderer)
 {
-	if ((tool != measureTool && tool != rectTool && tool != moveTool) || !rectDragActive || !measureFont.texture.isValid())
+	if ((tool != measureTool && tool != rectTool && tool != moveTool && tool != spikeTool) || !rectDragActive || !measureFont.texture.isValid())
 	{
 		return;
 	}
@@ -2049,6 +2744,12 @@ void LevelEditor::drawMeasureText(gl2d::Renderer2D &renderer)
 	{
 		textColor = rectDragPlacesSolid
 			? gl2d::Color4f{0.18f, 1.0f, 0.40f, 1.f}
+			: gl2d::Color4f{1.0f, 0.38f, 0.30f, 1.f};
+	}
+	else if (tool == spikeTool)
+	{
+		textColor = rectDragPlacesSolid
+			? gl2d::Color4f{1.0f, 0.42f, 0.34f, 1.f}
 			: gl2d::Color4f{1.0f, 0.38f, 0.30f, 1.f};
 	}
 	else if (tool == moveTool)
@@ -2088,6 +2789,11 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		bool hasSelectedDoor = hasLoadedLevel &&
 			selectedDoorIndex >= 0 &&
 			selectedDoorIndex < static_cast<int>(room.doors.size());
+		bool hasSelectedSpawnRegion = hasLoadedLevel &&
+			selectedSpawnRegionIndex >= 0 &&
+			selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()) &&
+			selectedSpawnRegionRectIndex >= 0 &&
+			selectedSpawnRegionRectIndex < static_cast<int>(room.spawnRegions[selectedSpawnRegionIndex].rects.size());
 		bool hasSelectedZipline = hasLoadedLevel &&
 			selectedZiplineIndex >= 0 &&
 			selectedZiplineIndex < static_cast<int>(room.ziplines.size());
@@ -2099,7 +2805,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
 		ImGui::TextUnformatted("Ctrl+S saves the current level");
 		ImGui::TextUnformatted("Tab returns to the world editor");
-		ImGui::TextUnformatted("Escape cancels active move, rect, measure, door, or zipline drag input");
+		ImGui::TextUnformatted("Escape cancels active move, rect, spike, measure, door, spawn region, or zipline drag input");
 		if (!hasLoadedLevel)
 		{
 			ImGui::TextColored({1.f, 0.88f, 0.35f, 1.f}, "Load or create a level file before editing.");
@@ -2108,13 +2814,15 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		ImGui::Separator();
 		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
 		ImGui::TextUnformatted("Tools");
-		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
-		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
-		if (ImGui::RadioButton("Rect (3)", tool == rectTool)) { tool = rectTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
-		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
-		if (ImGui::RadioButton("Door (5)", tool == doorTool)) { tool = doorTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
-		if (ImGui::RadioButton("Move (6)", tool == moveTool)) { tool = moveTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
-		if (ImGui::RadioButton("Zipline (7)", tool == ziplineTool)) { tool = ziplineTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Rect (3)", tool == rectTool)) { tool = rectTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Door (5)", tool == doorTool)) { tool = doorTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Move (6)", tool == moveTool)) { tool = moveTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Zipline (7)", tool == ziplineTool)) { tool = ziplineTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Spawn Region (8)", tool == spawnRegionTool)) { tool = spawnRegionTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Spike (9)", tool == spikeTool)) { tool = spikeTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 
 		if (tool == noneTool)
 		{
@@ -2128,9 +2836,21 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		{
 			ImGui::TextUnformatted("Drag to measure without editing");
 		}
+		else if (tool == spikeTool)
+		{
+			ImGui::TextUnformatted("Drag LMB to place spikes, drag RMB to clear");
+		}
 		else if (tool == doorTool)
 		{
 			ImGui::TextUnformatted("Ctrl+LMB empty tile adds, drag door moves, drag yellow spawn, drag corner resizes");
+		}
+		else if (tool == spawnRegionTool)
+		{
+			ImGui::TextUnformatted("Ctrl+drag adds a region, drag selected blue rect moves only it, drag blue point moves spawn, drag corner resizes");
+			if (spawnRegionAddRectArmed)
+			{
+				ImGui::TextUnformatted("Drag in the room to add another rectangle to the selected region");
+			}
 		}
 		else if (tool == moveTool)
 		{
@@ -2233,7 +2953,74 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 
 		ImGui::Separator();
-		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
+		ImGui::TextUnformatted("Spawn Regions");
+		ImGui::Text("Count: %d", static_cast<int>(room.spawnRegions.size()));
+		if (hasSelectedSpawnRegion)
+		{
+			SpawnRegion const &selectedSpawnRegion = room.spawnRegions[selectedSpawnRegionIndex];
+			SpawnRegionRect const &selectedRect = selectedSpawnRegion.rects[selectedSpawnRegionRectIndex];
+			ImGui::Text("Selected Region: %d", selectedSpawnRegionIndex + 1);
+			ImGui::Text("Selected Rect: %d / %d",
+				selectedSpawnRegionRectIndex + 1,
+				static_cast<int>(selectedSpawnRegion.rects.size()));
+
+			int rectX = selectedRect.position.x;
+			int rectY = selectedRect.position.y;
+			int rectW = selectedRect.size.x;
+			int rectH = selectedRect.size.y;
+			bool movedRect = false;
+			bool resizedRect = false;
+
+			if (ImGui::InputInt("Region Rect X", &rectX)) { movedRect = true; }
+			if (ImGui::InputInt("Region Rect Y", &rectY)) { movedRect = true; }
+			if (ImGui::InputInt("Region Rect Width", &rectW)) { resizedRect = true; }
+			if (ImGui::InputInt("Region Rect Height", &rectH)) { resizedRect = true; }
+
+			if (movedRect)
+			{
+				moveSelectedSpawnRegion(room, {rectX, rectY});
+			}
+			if (resizedRect)
+			{
+				resizeSelectedSpawnRegionRect(room, {rectW, rectH});
+			}
+
+			ImGui::Text("Spawn Point: %d, %d",
+				selectedSpawnRegion.spawnPosition.x,
+				selectedSpawnRegion.spawnPosition.y);
+			ImGui::TextUnformatted("Drag the blue spawn marker to move it.");
+
+			if (ImGui::Button("Add Rectangle"))
+			{
+				spawnRegionAddRectArmed = true;
+				spawnRegionActionHasError = false;
+				spawnRegionActionMessage = "Drag in the room to add a rectangle";
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Remove Selected Rect"))
+			{
+				removeSelectedSpawnRegionRect(room);
+			}
+			if (ImGui::Button("Delete Selected Region"))
+			{
+				requestDeleteSelectedSpawnRegion(room);
+			}
+		}
+		else
+		{
+			ImGui::TextUnformatted("Selected: none");
+			ImGui::TextUnformatted("Pick Spawn Region (8) and Ctrl+drag in the room to add one.");
+		}
+
+		if (!spawnRegionActionMessage.empty())
+		{
+			ImVec4 spawnRegionColor = spawnRegionActionHasError
+				? ImVec4(1.f, 0.45f, 0.35f, 1.f)
+				: ImVec4(0.58f, 0.82f, 1.f, 1.f);
+			ImGui::TextColored(spawnRegionColor, "%s", spawnRegionActionMessage.c_str());
+		}
+
+		ImGui::Separator();
 		ImGui::TextUnformatted("Ziplines");
 		ImGui::Text("Count: %d", static_cast<int>(room.ziplines.size()));
 		if (hasSelectedZipline)
@@ -2273,7 +3060,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		else if (hoveredTileValid)
 		{
 			ImGui::Text("Hover Tile: %d, %d", hoveredTile.x, hoveredTile.y);
-			ImGui::Text("Solid: %d", room.getBlockUnsafe(hoveredTile.x, hoveredTile.y).solid ? 1 : 0);
+			ImGui::Text("Block Type: %d", static_cast<int>(room.getBlockUnsafe(hoveredTile.x, hoveredTile.y).type));
 		}
 		else
 		{
@@ -2355,20 +3142,56 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 			pendingOpenDeleteZiplinePopup = false;
 		}
 
+		if (pendingOpenDeleteSpawnRegionPopup)
+		{
+			ImGui::OpenPopup("Delete Spawn Region");
+			pendingOpenDeleteSpawnRegionPopup = false;
+		}
+
+		if (ImGui::BeginPopupModal("Delete Spawn Region", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::TextUnformatted("Delete the selected spawn region?");
+
+			if (ImGui::Button("Delete", {120.f, 0.f}))
+			{
+				selectedSpawnRegionIndex = pendingDeleteSpawnRegionIndex;
+				if (selectedSpawnRegionIndex >= 0 &&
+					selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()))
+				{
+					deleteSelectedSpawnRegion(room);
+				}
+				else
+				{
+					clearSpawnRegionSelection();
+					spawnRegionActionHasError = true;
+					spawnRegionActionMessage = "That spawn region no longer exists";
+				}
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				pendingDeleteSpawnRegionIndex = -1;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
 		if (ImGui::BeginPopupModal("Delete Zipline", 0, ImGuiWindowFlags_AlwaysAutoResize))
 		{
 			ImGui::TextUnformatted("Delete the selected zipline?");
 
 			if (ImGui::Button("Delete", {120.f, 0.f}))
 			{
-				selectedZiplineIndex = pendingDeleteZiplineIndex;
-				if (selectedZiplineIndex >= 0 && selectedZiplineIndex < static_cast<int>(room.ziplines.size()))
+				if (pendingDeleteZiplineIndex >= 0 &&
+					pendingDeleteZiplineIndex < static_cast<int>(room.ziplines.size()))
 				{
-					deleteSelectedZipline(room);
+					deleteSelectedZipline(room, pendingDeleteZiplineIndex);
 				}
 				else
 				{
 					clearZiplineSelection();
+					pendingDeleteZiplineIndex = -1;
 					doorActionHasError = true;
 					doorActionMessage = "That zipline no longer exists";
 				}
@@ -2490,11 +3313,16 @@ void LevelEditor::loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearSpawnRegionSelection();
 		clearZiplineSelection();
 		doorActionMessage.clear();
 		doorActionHasError = false;
+		spawnRegionActionMessage.clear();
+		spawnRegionActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeleteSpawnRegionIndex = -1;
+		pendingOpenDeleteSpawnRegionPopup = false;
 		pendingDeleteZiplineIndex = -1;
 		pendingOpenDeleteZiplinePopup = false;
 		pendingDoorDeletes.clear();
@@ -2554,11 +3382,16 @@ void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearSpawnRegionSelection();
 		clearZiplineSelection();
 		doorActionMessage.clear();
 		doorActionHasError = false;
+		spawnRegionActionMessage.clear();
+		spawnRegionActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeleteSpawnRegionIndex = -1;
+		pendingOpenDeleteSpawnRegionPopup = false;
 		pendingDeleteZiplineIndex = -1;
 		pendingOpenDeleteZiplinePopup = false;
 		pendingDoorDeletes.clear();
@@ -2580,6 +3413,8 @@ LevelEditor::UndoSnapshot LevelEditor::captureUndoSnapshot(Room &room) const
 	snapshot.renameName = renameName;
 	snapshot.selectedDoorIndex = selectedDoorIndex;
 	snapshot.selectedDoorName = selectedDoorName;
+	snapshot.selectedSpawnRegionIndex = selectedSpawnRegionIndex;
+	snapshot.selectedSpawnRegionRectIndex = selectedSpawnRegionRectIndex;
 	snapshot.selectedZiplineIndex = selectedZiplineIndex;
 	snapshot.selectedZiplinePoint = selectedZiplinePoint;
 	snapshot.pendingRoomSize = pendingRoomSize;
@@ -2595,14 +3430,16 @@ bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &
 	auto roomsMatch = [](Room const &lhs, Room const &rhs)
 	{
 		if (lhs.size != rhs.size || lhs.blocks.size() != rhs.blocks.size() ||
-			lhs.doors.size() != rhs.doors.size() || lhs.ziplines.size() != rhs.ziplines.size())
+			lhs.doors.size() != rhs.doors.size() ||
+			lhs.spawnRegions.size() != rhs.spawnRegions.size() ||
+			lhs.ziplines.size() != rhs.ziplines.size())
 		{
 			return false;
 		}
 
 		for (size_t i = 0; i < lhs.blocks.size(); i++)
 		{
-			if (lhs.blocks[i].solid != rhs.blocks[i].solid)
+			if (lhs.blocks[i].type != rhs.blocks[i].type)
 			{
 				return false;
 			}
@@ -2618,6 +3455,27 @@ bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &
 				leftDoor.playerSpawnPosition != rightDoor.playerSpawnPosition)
 			{
 				return false;
+			}
+		}
+
+		for (size_t i = 0; i < lhs.spawnRegions.size(); i++)
+		{
+			SpawnRegion const &leftRegion = lhs.spawnRegions[i];
+			SpawnRegion const &rightRegion = rhs.spawnRegions[i];
+			if (leftRegion.spawnPosition != rightRegion.spawnPosition ||
+				leftRegion.rects.size() != rightRegion.rects.size())
+			{
+				return false;
+			}
+
+			for (size_t rectIndex = 0; rectIndex < leftRegion.rects.size(); rectIndex++)
+			{
+				SpawnRegionRect const &leftRect = leftRegion.rects[rectIndex];
+				SpawnRegionRect const &rightRect = rightRegion.rects[rectIndex];
+				if (leftRect.position != rightRect.position || leftRect.size != rightRect.size)
+				{
+					return false;
+				}
 			}
 		}
 
@@ -2660,6 +3518,8 @@ bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &
 		a.renameName == b.renameName &&
 		a.selectedDoorIndex == b.selectedDoorIndex &&
 		a.selectedDoorName == b.selectedDoorName &&
+		a.selectedSpawnRegionIndex == b.selectedSpawnRegionIndex &&
+		a.selectedSpawnRegionRectIndex == b.selectedSpawnRegionRectIndex &&
 		a.selectedZiplineIndex == b.selectedZiplineIndex &&
 		a.selectedZiplinePoint == b.selectedZiplinePoint &&
 		a.pendingRoomSize == b.pendingRoomSize &&
@@ -2747,6 +3607,7 @@ bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl
 	brushPaintActive = false;
 	clearMoveSelection();
 	clearDoorSelection();
+	clearSpawnRegionSelection();
 	clearZiplineSelection();
 	selectedDoorIndex = snapshot.selectedDoorIndex;
 	if (selectedDoorIndex >= 0 && selectedDoorIndex < static_cast<int>(room.doors.size()))
@@ -2757,6 +3618,16 @@ bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl
 	{
 		selectedDoorName[0] = 0;
 	}
+	selectedSpawnRegionIndex = snapshot.selectedSpawnRegionIndex;
+	selectedSpawnRegionRectIndex = snapshot.selectedSpawnRegionRectIndex;
+	if (selectedSpawnRegionIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()) ||
+		selectedSpawnRegionRectIndex < 0 ||
+		selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()) ||
+		selectedSpawnRegionRectIndex >= static_cast<int>(room.spawnRegions[selectedSpawnRegionIndex].rects.size()))
+	{
+		clearSpawnRegionSelection();
+	}
 	selectedZiplineIndex = snapshot.selectedZiplineIndex;
 	selectedZiplinePoint = snapshot.selectedZiplinePoint;
 	if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
@@ -2766,6 +3637,8 @@ bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl
 
 	pendingDeleteDoorName.clear();
 	pendingOpenDeleteDoorPopup = false;
+	pendingDeleteSpawnRegionIndex = -1;
+	pendingOpenDeleteSpawnRegionPopup = false;
 	pendingDeleteZiplineIndex = -1;
 	pendingOpenDeleteZiplinePopup = false;
 	hoveredTileValid = false;

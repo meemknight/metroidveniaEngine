@@ -20,6 +20,8 @@ struct LevelEditor
 		doorTool,
 		moveTool,
 		ziplineTool,
+		spawnRegionTool,
+		spikeTool,
 	};
 
 	struct EditorTuning
@@ -52,6 +54,8 @@ struct LevelEditor
 		std::string renameName = {};
 		int selectedDoorIndex = -1;
 		std::string selectedDoorName = {};
+		int selectedSpawnRegionIndex = -1;
+		int selectedSpawnRegionRectIndex = -1;
 		int selectedZiplineIndex = -1;
 		int selectedZiplinePoint = -1;
 		glm::ivec2 pendingRoomSize = {};
@@ -71,7 +75,7 @@ struct LevelEditor
 		glm::ivec2 size = {};
 		glm::ivec2 previewPosition = {};
 		glm::ivec2 dragGrabOffset = {};
-		std::vector<char> solidMask = {};
+		std::vector<BlockType> blockTypes = {};
 	};
 
 	void init();
@@ -90,8 +94,8 @@ struct LevelEditor
 	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
 	void updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewFocused);
 	void updateTools(platform::Input &input, Room &room, bool gameViewHovered);
-	void setBlock(Room &room, int x, int y, bool solid);
-	void fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, bool solid);
+	void setBlock(Room &room, int x, int y, BlockType type);
+	void fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, BlockType type);
 	void resizeRoom(Room &room, int newSizeX, int newSizeY);
 	glm::vec4 getRectPreview(glm::ivec2 a, glm::ivec2 b);
 	glm::vec2 worldToScreen(glm::vec2 worldPos, gl2d::Renderer2D &renderer);
@@ -101,6 +105,7 @@ struct LevelEditor
 	bool moveSelectionPreviewContainsTile(glm::ivec2 tile) const;
 	void commitMoveSelection(Room &room);
 	void clearDoorSelection();
+	void clearSpawnRegionSelection();
 	void clearZiplineSelection();
 	int getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld);
 	int getHoveredDoorSpawnIndex(Room &room, glm::vec2 mouseWorld);
@@ -115,18 +120,32 @@ struct LevelEditor
 	void syncSelectedDoorBuffer(Room &room);
 	void applySelectedDoorName(Room &room);
 	void moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position);
+	bool getHoveredSpawnRegionRect(Room &room, glm::vec2 mouseWorld, int &regionIndex, int &rectIndex);
+	int getHoveredSpawnRegionSpawnIndex(Room &room, glm::vec2 mouseWorld);
+	bool hoveredSelectedSpawnRegionResizeHandle(Room &room, glm::vec2 mouseWorld);
+	void createSpawnRegion(Room &room, glm::ivec2 a, glm::ivec2 b);
+	void addRectToSelectedSpawnRegion(Room &room, glm::ivec2 a, glm::ivec2 b);
+	void moveSelectedSpawnRegion(Room &room, glm::ivec2 position);
+	void resizeSelectedSpawnRegionRect(Room &room, glm::ivec2 size);
+	void moveSelectedSpawnRegionSpawn(Room &room, glm::ivec2 position);
+	void removeSelectedSpawnRegionRect(Room &room);
+	void requestDeleteSelectedSpawnRegion(Room &room);
+	void deleteSelectedSpawnRegion(Room &room);
 	bool getHoveredZiplinePoint(Room &room, glm::vec2 mouseWorld, int &ziplineIndex, int &pointIndex);
 	void createZipline(Room &room, glm::ivec2 firstPoint, glm::ivec2 secondPoint);
 	void moveSelectedZiplinePoint(Room &room, glm::ivec2 position);
 	void requestDeleteSelectedZipline(Room &room);
-	void deleteSelectedZipline(Room &room);
+	void deleteSelectedZipline(Room &room, int ziplineIndex);
 	void clampZiplineToRoom(Zipline &zipline, Room const &room);
 	void clampDoorToRoom(Door &door, Room const &room);
+	void clampSpawnRegionRectToRoom(SpawnRegionRect &rect, Room const &room);
+	void clampSpawnRegionToRoom(SpawnRegion &spawnRegion, Room const &room);
 	void clampCamera(Room &room, gl2d::Renderer2D &renderer);
 	void drawRoom(Room &room, gl2d::Renderer2D &renderer);
 	void drawGrid(Room &room, gl2d::Renderer2D &renderer);
 	void drawMoveSelection(gl2d::Renderer2D &renderer);
 	void drawDoors(Room &room, gl2d::Renderer2D &renderer);
+	void drawSpawnRegions(Room &room, gl2d::Renderer2D &renderer);
 	void drawZiplines(Room &room, gl2d::Renderer2D &renderer);
 	void drawHoveredTile(gl2d::Renderer2D &renderer);
 	void drawRectPreview(gl2d::Renderer2D &renderer);
@@ -166,6 +185,16 @@ struct LevelEditor
 	bool doorResizeActive = false;
 	bool doorSpawnDragActive = false;
 	glm::ivec2 doorDragGrabOffset = {};
+	int selectedSpawnRegionIndex = -1;
+	int selectedSpawnRegionRectIndex = -1;
+	bool spawnRegionDragActive = false;
+	bool spawnRegionResizeActive = false;
+	bool spawnRegionSpawnDragActive = false;
+	bool spawnRegionCreateDragActive = false;
+	bool spawnRegionAddRectArmed = false;
+	glm::ivec2 spawnRegionDragGrabOffset = {};
+	glm::ivec2 spawnRegionCreateStart = {};
+	glm::ivec2 spawnRegionCreateEnd = {};
 	int selectedZiplineIndex = -1;
 	int selectedZiplinePoint = -1;
 	bool ziplineCreateDragActive = false;
@@ -193,11 +222,15 @@ struct LevelEditor
 	char renameName[128] = {};
 	char selectedDoorName[128] = {};
 	std::string pendingDeleteDoorName = {};
+	int pendingDeleteSpawnRegionIndex = -1;
 	int pendingDeleteZiplineIndex = -1;
 	glm::ivec2 newLevelSize = {40, 24};
 	std::string doorActionMessage = {};
 	bool doorActionHasError = false;
+	std::string spawnRegionActionMessage = {};
+	bool spawnRegionActionHasError = false;
 	bool pendingOpenDeleteDoorPopup = false;
+	bool pendingOpenDeleteSpawnRegionPopup = false;
 	bool pendingOpenDeleteZiplinePopup = false;
 	std::vector<PendingDoorRename> pendingDoorRenames = {};
 	std::vector<std::string> pendingDoorDeletes = {};

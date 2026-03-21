@@ -1,14 +1,38 @@
 #pragma once
 
 #include "door.h"
+#include "spawnRegion.h"
 #include "zipline.h"
 
 #include <glm/vec2.hpp>
 #include <vector>
 
+// Room blocks are saved as tiny tile values so editors and gameplay can share
+// one simple map format: 0 empty, 1 solid, 2 spike.
+enum BlockType : unsigned char
+{
+	emptyBlock = 0,
+	solidBlock = 1,
+	spikeBlock = 2,
+};
+
+inline BlockType getSafeBlockTypeFromInt(int value)
+{
+	switch (value)
+	{
+		case solidBlock: return solidBlock;
+		case spikeBlock: return spikeBlock;
+		default: return emptyBlock;
+	}
+}
+
 struct Block
 {
-	bool solid = false;
+	BlockType type = emptyBlock;
+
+	bool isSolid() const { return type == solidBlock; }
+	bool isDanger() const { return type == spikeBlock; }
+	bool isEmpty() const { return type == emptyBlock; }
 };
 
 struct Room
@@ -29,5 +53,6 @@ struct Room
 	std::vector<Block> blocks;
 	glm::ivec2 size = {};
 	std::vector<Door> doors;
+	std::vector<SpawnRegion> spawnRegions;
 	std::vector<Zipline> ziplines;
 };

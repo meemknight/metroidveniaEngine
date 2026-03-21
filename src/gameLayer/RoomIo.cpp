@@ -108,6 +108,40 @@ namespace
 			}
 		}
 
+		for (SpawnRegion const &spawnRegion : room.spawnRegions)
+		{
+			if (spawnRegion.rects.empty())
+			{
+				errorMessage = "Spawn regions need at least one rectangle";
+				return false;
+			}
+
+			if (spawnRegion.spawnPosition.x < 0 || spawnRegion.spawnPosition.y < 0 ||
+				spawnRegion.spawnPosition.x >= room.size.x ||
+				spawnRegion.spawnPosition.y >= room.size.y)
+			{
+				errorMessage = "Spawn region points must stay inside the room";
+				return false;
+			}
+
+			for (SpawnRegionRect const &rect : spawnRegion.rects)
+			{
+				if (rect.size.x <= 0 || rect.size.y <= 0)
+				{
+					errorMessage = "Spawn region rectangles must stay above zero";
+					return false;
+				}
+
+				if (rect.position.x < 0 || rect.position.y < 0 ||
+					rect.position.x + rect.size.x > room.size.x ||
+					rect.position.y + rect.size.y > room.size.y)
+				{
+					errorMessage = "Spawn region rectangles must stay inside the room";
+					return false;
+				}
+			}
+		}
+
 		for (Zipline const &zipline : room.ziplines)
 		{
 			for (glm::ivec2 const &point : zipline.points)
@@ -210,6 +244,7 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 			{"height", room.size.y},
 			{"blocks", nlohmann::json::array()},
 			{"doors", nlohmann::json::array()},
+			{"spawnRegions", nlohmann::json::array()},
 			{"ziplines", nlohmann::json::array()}
 		};
 
@@ -220,7 +255,7 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 
 		for (Block const &block : room.blocks)
 		{
-			data["blocks"].push_back(block.solid ? 1 : 0);
+			data["blocks"].push_back(static_cast<int>(block.type));
 		}
 
 		for (Door const &door : room.doors)
@@ -233,6 +268,26 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 				{"height", door.size.y},
 				{"playerSpawnX", door.playerSpawnPosition.x},
 				{"playerSpawnY", door.playerSpawnPosition.y}
+			});
+		}
+
+		for (SpawnRegion const &spawnRegion : room.spawnRegions)
+		{
+			nlohmann::json rects = nlohmann::json::array();
+			for (SpawnRegionRect const &rect : spawnRegion.rects)
+			{
+				rects.push_back({
+					{"x", rect.position.x},
+					{"y", rect.position.y},
+					{"width", rect.size.x},
+					{"height", rect.size.y}
+				});
+			}
+
+			data["spawnRegions"].push_back({
+				{"spawnX", spawnRegion.spawnPosition.x},
+				{"spawnY", spawnRegion.spawnPosition.y},
+				{"rects", rects}
 			});
 		}
 
@@ -308,15 +363,16 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 		{
 			if (blocks[i].is_boolean())
 			{
-				room.blocks[i].solid = blocks[i].get<bool>();
+				room.blocks[i].type = blocks[i].get<bool>() ? solidBlock : emptyBlock;
 			}
 			else
 			{
-				room.blocks[i].solid = blocks[i].get<int>() != 0;
+				room.blocks[i].type = getSafeBlockTypeFromInt(blocks[i].get<int>());
 			}
 		}
 
 		room.doors.clear();
+		room.spawnRegions.clear();
 		room.ziplines.clear();
 		if (data.contains("doors"))
 		{
@@ -380,6 +436,77 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 				}
 
 				room.doors.push_back(door);
+			}
+		}
+
+		if (data.contains("spawnRegions"))
+		{
+			if (!data["spawnRegions"].is_array())
+			{
+				result.message = "Spawn regions must be stored as a JSON array";
+				return result;
+			}
+
+			for (auto const &spawnRegionData : data["spawnRegions"])
+			{
+				if (!spawnRegionData.is_object())
+				{
+					result.message = "Spawn region entries must be JSON objects";
+					return result;
+				}
+
+				SpawnRegion spawnRegion = {};
+				spawnRegion.spawnPosition = {
+					spawnRegionData.value("spawnX", 0),
+					spawnRegionData.value("spawnY", 0)
+				};
+
+				if (!spawnRegionData.contains("rects") || !spawnRegionData["rects"].is_array())
+				{
+					result.message = "Spawn regions need a rects array";
+					return result;
+				}
+
+				for (auto const &rectData : spawnRegionData["rects"])
+				{
+					if (!rectData.is_object())
+					{
+						result.message = "Spawn region rectangles must be JSON objects";
+						return result;
+					}
+
+					SpawnRegionRect rect = {};
+					rect.position = {
+						rectData.value("x", 0),
+						rectData.value("y", 0)
+					};
+					rect.size = {
+						rectData.value("width", 1),
+						rectData.value("height", 1)
+					};
+
+					if (rect.size.x <= 0 || rect.size.y <= 0)
+					{
+						result.message = "Spawn region rectangles must stay above zero";
+						return result;
+					}
+
+					rect.position.x = std::clamp(rect.position.x, 0, std::max(room.size.x - 1, 0));
+					rect.position.y = std::clamp(rect.position.y, 0, std::max(room.size.y - 1, 0));
+					rect.size.x = std::clamp(rect.size.x, 1, std::max(room.size.x - rect.position.x, 1));
+					rect.size.y = std::clamp(rect.size.y, 1, std::max(room.size.y - rect.position.y, 1));
+					spawnRegion.rects.push_back(rect);
+				}
+
+				if (spawnRegion.rects.empty())
+				{
+					result.message = "Spawn regions need at least one rectangle";
+					return result;
+				}
+
+				spawnRegion.spawnPosition.x = std::clamp(spawnRegion.spawnPosition.x, 0, std::max(room.size.x - 1, 0));
+				spawnRegion.spawnPosition.y = std::clamp(spawnRegion.spawnPosition.y, 0, std::max(room.size.y - 1, 0));
+				room.spawnRegions.push_back(spawnRegion);
 			}
 		}
 

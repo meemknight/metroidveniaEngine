@@ -21,6 +21,7 @@ namespace platform
 			Space,
 			Enter,
 			Escape,
+			Backspace,
 			Up,
 			Down,
 			Left,

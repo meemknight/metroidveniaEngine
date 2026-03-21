@@ -4,6 +4,7 @@
 #include "imguiTools.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -16,11 +17,18 @@ namespace
 	constexpr float kMinWorldZoom = 0.1f;
 	constexpr float kMaxWorldZoom = 48.f;
 	constexpr float kPlacedLevelDoubleClickTime = 0.28f;
+	constexpr size_t kMaxPendingNewLevelNameLength = 64;
+	constexpr float kPendingNewLevelResizeHandleSize = 1.35f;
 	const gl2d::Color4f kPreviewBackgroundColor = {0.08f, 0.10f, 0.13f, 1.f};
 	const gl2d::Color4f kPreviewBlockColor = {0.32f, 0.40f, 0.50f, 1.f};
 	const gl2d::Color4f kPreviewDoorFillColor = {1.0f, 0.56f, 0.12f, 0.16f};
 	const gl2d::Color4f kPreviewDoorOutlineColor = {1.0f, 0.68f, 0.22f, 0.85f};
 	const gl2d::Color4f kLinkedDoorLineColor = {0.34f, 0.88f, 1.0f, 0.90f};
+	const gl2d::Color4f kPendingNewLevelFillColor = {0.58f, 0.62f, 0.70f, 0.12f};
+	const gl2d::Color4f kPendingNewLevelOutlineColor = {0.72f, 0.78f, 0.86f, 0.72f};
+	const gl2d::Color4f kPendingNewLevelNamingFillColor = {0.72f, 0.76f, 0.84f, 0.16f};
+	const gl2d::Color4f kPendingNewLevelNamingOutlineColor = {0.95f, 0.98f, 1.0f, 0.95f};
+	const gl2d::Color4f kPendingNewLevelHandleColor = {0.96f, 0.98f, 1.0f, 0.92f};
 
 	bool isDoorReferenceSet(WorldEditor::DoorReference const &doorRef)
 	{
@@ -49,6 +57,12 @@ namespace
 	// Draws a small room snapshot, one world tile per preview pixel.
 	void drawRoomPreview(Room const &room, gl2d::Renderer2D &renderer)
 	{
+		const gl2d::Color4f previewSpikeColor = {0.86f, 0.20f, 0.22f, 1.f};
+		const gl2d::Color4f previewZiplineLineColor = {0.86f, 0.88f, 0.92f, 0.42f};
+		const gl2d::Color4f previewZiplinePointColor = {0.94f, 0.84f, 0.28f, 0.92f};
+		constexpr float previewZiplineLineWidth = 1.0f;
+		constexpr float previewZiplinePointSize = 0.32f;
+
 		renderer.renderRectangle(
 			{0.f, 0.f, static_cast<float>(room.size.x), static_cast<float>(room.size.y)},
 			kPreviewBackgroundColor);
@@ -57,14 +71,15 @@ namespace
 		{
 			for (int x = 0; x < room.size.x; x++)
 			{
-				if (!room.getBlockUnsafe(x, y).solid)
+				Block const &block = room.getBlockUnsafe(x, y);
+				if (block.isEmpty())
 				{
 					continue;
 				}
 
 				renderer.renderRectangle(
 					{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
-					kPreviewBlockColor);
+					block.isSolid() ? kPreviewBlockColor : previewSpikeColor);
 			}
 		}
 
@@ -72,6 +87,29 @@ namespace
 		{
 			renderer.renderRectangle(door.getRectF(), kPreviewDoorFillColor);
 			renderer.renderRectangleOutline(door.getRectF(), kPreviewDoorOutlineColor, 0.18f);
+		}
+
+		// World previews should include traversal markers too, and the preview line
+		// stays intentionally chunky so it survives the tiny framebuffer resolution.
+		for (Zipline const &zipline : room.ziplines)
+		{
+			renderer.renderLine(
+				zipline.getPointCenter(0),
+				zipline.getPointCenter(1),
+				previewZiplineLineColor,
+				previewZiplineLineWidth);
+
+			for (glm::ivec2 const &point : zipline.points)
+			{
+				renderer.renderRectangle(
+					{
+						point.x + 0.5f - previewZiplinePointSize * 0.5f,
+						point.y + 0.5f - previewZiplinePointSize * 0.5f,
+						previewZiplinePointSize,
+						previewZiplinePointSize
+					},
+					previewZiplinePointColor);
+			}
 		}
 	}
 
@@ -152,6 +190,7 @@ void WorldEditor::enter(gl2d::Renderer2D &renderer)
 {
 	refreshPlacementSizesFromRooms();
 	invalidateAllLevelPreviews();
+	clearPendingNewLevel();
 	if (sanitizeDoorLinks())
 	{
 		worldDirty = true;
@@ -202,6 +241,7 @@ void WorldEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 	}
 
 	updateShortcuts(input, renderer, gameViewFocused);
+	updatePendingNewLevelTyping(input, renderer);
 	updateCamera(deltaTime, input, renderer);
 	updateDragging(input, renderer, gameViewHovered);
 	refreshClosestMissingPreview(renderer);
@@ -338,6 +378,7 @@ bool WorldEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, gl2d::Renderer
 	dragStartPositions.clear();
 	dragAnchorLevelName.clear();
 	clearPendingDoorLink();
+	clearPendingNewLevel();
 
 	syncPreviewStorageToWorld();
 	refreshPlacementSizesFromRooms();
@@ -576,6 +617,11 @@ void WorldEditor::clampCamera(gl2d::Renderer2D &renderer)
 
 void WorldEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer)
 {
+	if (pendingNewLevel.active && pendingNewLevel.naming)
+	{
+		return;
+	}
+
 	float moveSpeed = tuning.cameraMoveSpeed;
 	// Scale camera pan with zoom so wide overview navigation is faster and close work stays easier to control.
 	float zoomMoveMultiplier = std::clamp(
@@ -620,6 +666,14 @@ void WorldEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 {
 	if (input.isButtonPressed(platform::Button::Escape))
 	{
+		if (pendingNewLevel.active)
+		{
+			clearPendingNewLevel();
+			worldHasError = false;
+			worldMessage = "Canceled new level";
+			return;
+		}
+
 		dragActive = false;
 		selectionPressActive = false;
 		selectionDragActive = false;
@@ -715,6 +769,53 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 
 	glm::vec2 mouseWorld = screenToWorld({static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)}, renderer);
 	pendingDoorLinkPreviewPoint = mouseWorld;
+
+	if (pendingNewLevel.resizeActive)
+	{
+		if (input.isLMouseHeld())
+		{
+			float maxX = std::max(std::ceil(mouseWorld.x), pendingNewLevel.rect.x + 1.f);
+			float maxY = std::max(std::ceil(mouseWorld.y), pendingNewLevel.rect.y + 1.f);
+			pendingNewLevel.rect.z = maxX - pendingNewLevel.rect.x;
+			pendingNewLevel.rect.w = maxY - pendingNewLevel.rect.y;
+			return;
+		}
+
+		pendingNewLevel.resizeActive = false;
+		return;
+	}
+
+	if (pendingNewLevel.active && input.isLMousePressed())
+	{
+		if (pendingNewLevelResizeHandleContains(mouseWorld))
+		{
+			pendingNewLevel.resizeActive = true;
+			pendingNewLevel.resizeStartRect = pendingNewLevel.rect;
+			worldHasError = false;
+			worldMessage = "Drag the corner to resize the new level";
+			return;
+		}
+
+		if (pendingNewLevelContains(mouseWorld))
+		{
+			pendingNewLevel.naming = true;
+			clearSelectedDoor();
+			clearPlacedLevelSelection();
+			worldHasError = false;
+			worldMessage = "Type a new level name and press Enter";
+			return;
+		}
+
+		DoorReference hoveredDoor = getPlacedDoorAt(mouseWorld);
+		std::string hoveredLevel = getPlacedLevelAt(mouseWorld);
+		clearPendingNewLevel();
+		if (!isDoorReferenceSet(hoveredDoor) && hoveredLevel.empty())
+		{
+			worldHasError = false;
+			worldMessage = "Canceled new level";
+			return;
+		}
+	}
 
 	if (pendingDoorLinkPick)
 	{
@@ -870,8 +971,11 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 				if (!selectedPlacedLevelName.empty())
 				{
 					selectedLevelName = selectedPlacedLevelName;
+					clearPendingNewLevel();
+					return;
 				}
 
+				beginPendingNewLevel(selectionRect);
 				return;
 			}
 
@@ -1293,6 +1397,7 @@ void WorldEditor::loadWorld()
 	selectionPressActive = false;
 	selectionDragActive = false;
 	dragActive = false;
+	clearPendingNewLevel();
 	placementDragMoved = false;
 	dragStartPositions.clear();
 	dragAnchorLevelName.clear();
@@ -1700,6 +1805,190 @@ std::string WorldEditor::getPlacedLevelAt(glm::vec2 worldPoint)
 	return {};
 }
 
+glm::vec4 WorldEditor::makePendingNewLevelRect(glm::vec4 draggedRect) const
+{
+	float minX = std::floor(draggedRect.x);
+	float minY = std::floor(draggedRect.y);
+	float maxX = std::ceil(draggedRect.x + draggedRect.z);
+	float maxY = std::ceil(draggedRect.y + draggedRect.w);
+
+	return {
+		minX,
+		minY,
+		std::max(maxX - minX, 1.f),
+		std::max(maxY - minY, 1.f)
+	};
+}
+
+glm::vec4 WorldEditor::getPendingNewLevelResizeHandleRect() const
+{
+	if (!pendingNewLevel.active)
+	{
+		return {};
+	}
+
+	return {
+		pendingNewLevel.rect.x + pendingNewLevel.rect.z - kPendingNewLevelResizeHandleSize,
+		pendingNewLevel.rect.y + pendingNewLevel.rect.w - kPendingNewLevelResizeHandleSize,
+		kPendingNewLevelResizeHandleSize,
+		kPendingNewLevelResizeHandleSize
+	};
+}
+
+void WorldEditor::clearPendingNewLevel()
+{
+	pendingNewLevel = {};
+}
+
+void WorldEditor::beginPendingNewLevel(glm::vec4 draggedRect)
+{
+	clearSelectedDoor();
+	clearPlacedLevelSelection();
+	selectedLevelName.clear();
+	lastClickedPlacedLevelName.clear();
+	placedLevelDoubleClickTimer = 0.f;
+
+	pendingNewLevel.active = true;
+	pendingNewLevel.naming = false;
+	pendingNewLevel.rect = makePendingNewLevelRect(draggedRect);
+	pendingNewLevel.typedName.clear();
+
+	worldHasError = false;
+	worldMessage = "Click the gray room and type a name";
+}
+
+bool WorldEditor::pendingNewLevelContains(glm::vec2 worldPoint) const
+{
+	if (!pendingNewLevel.active)
+	{
+		return false;
+	}
+
+	glm::vec4 const &rect = pendingNewLevel.rect;
+	return
+		worldPoint.x >= rect.x &&
+		worldPoint.y >= rect.y &&
+		worldPoint.x <= rect.x + rect.z &&
+		worldPoint.y <= rect.y + rect.w;
+}
+
+bool WorldEditor::pendingNewLevelResizeHandleContains(glm::vec2 worldPoint) const
+{
+	if (!pendingNewLevel.active)
+	{
+		return false;
+	}
+
+	glm::vec4 handleRect = getPendingNewLevelResizeHandleRect();
+	return
+		worldPoint.x >= handleRect.x &&
+		worldPoint.y >= handleRect.y &&
+		worldPoint.x <= handleRect.x + handleRect.z &&
+		worldPoint.y <= handleRect.y + handleRect.w;
+}
+
+void WorldEditor::updatePendingNewLevelTyping(platform::Input &input, gl2d::Renderer2D &renderer)
+{
+	if (!pendingNewLevel.active || !pendingNewLevel.naming)
+	{
+		return;
+	}
+
+	if (input.isButtonPressed(platform::Button::Enter))
+	{
+		tryCreatePendingNewLevel(renderer);
+		return;
+	}
+
+	if ((input.isButtonPressed(platform::Button::Backspace) || input.isButtonTyped(platform::Button::Backspace)) &&
+		!pendingNewLevel.typedName.empty())
+	{
+		pendingNewLevel.typedName.pop_back();
+	}
+
+	for (char c : input.typedInput)
+	{
+		if (c == 0)
+		{
+			break;
+		}
+
+		if (static_cast<unsigned char>(c) < 32 || c == 127)
+		{
+			continue;
+		}
+
+		if (pendingNewLevel.typedName.size() >= kMaxPendingNewLevelNameLength)
+		{
+			break;
+		}
+
+		pendingNewLevel.typedName.push_back(c);
+	}
+}
+
+void WorldEditor::tryCreatePendingNewLevel(gl2d::Renderer2D &renderer)
+{
+	if (!pendingNewLevel.active)
+	{
+		return;
+	}
+
+	std::string levelName = pendingNewLevel.typedName;
+	while (!levelName.empty() && std::isspace(static_cast<unsigned char>(levelName.front())))
+	{
+		levelName.erase(levelName.begin());
+	}
+	while (!levelName.empty() && std::isspace(static_cast<unsigned char>(levelName.back())))
+	{
+		levelName.pop_back();
+	}
+
+	if (levelName.empty())
+	{
+		worldHasError = true;
+		worldMessage = "Type a level name first";
+		return;
+	}
+
+	if (roomFileExists(levelName.c_str()))
+	{
+		worldHasError = true;
+		worldMessage = "A level with that name already exists";
+		return;
+	}
+
+	Room room = {};
+	room.create(
+		std::max(static_cast<int>(pendingNewLevel.rect.z), 1),
+		std::max(static_cast<int>(pendingNewLevel.rect.w), 1));
+
+	RoomIoResult saveResult = saveRoomToFile(room, levelName.c_str());
+	worldHasError = !saveResult.success;
+	worldMessage = saveResult.message;
+	if (!saveResult.success)
+	{
+		return;
+	}
+
+	WorldLevelPlacement placement = {};
+	placement.name = saveResult.levelName;
+	placement.position = {pendingNewLevel.rect.x, pendingNewLevel.rect.y};
+	placement.size = room.size;
+
+	world.levels[placement.name] = placement;
+	selectPlacedLevel(placement.name);
+	selectedLevelName = placement.name;
+	selectedDoor = {};
+	ensureBoundsForPlacement(placement);
+	worldDirty = true;
+	worldHasError = false;
+	worldMessage = "Created new level";
+	invalidateLevelPreview(placement.name);
+	clearPendingNewLevel();
+	pushUndoSnapshot();
+}
+
 void WorldEditor::drawWorld(gl2d::Renderer2D &renderer)
 {
 	renderer.renderRectangle(world.bounds, {0.07f, 0.08f, 0.10f, 1.f});
@@ -1774,6 +2063,24 @@ void WorldEditor::drawLevels(gl2d::Renderer2D &renderer)
 		}
 
 		renderer.renderRectangleOutline(placement.getRect(), outlineColor, 1.0f);
+	}
+
+	if (pendingNewLevel.active)
+	{
+		renderer.renderRectangle(
+			pendingNewLevel.rect,
+			pendingNewLevel.naming ? kPendingNewLevelNamingFillColor : kPendingNewLevelFillColor);
+		renderer.renderRectangleOutline(
+			pendingNewLevel.rect,
+			pendingNewLevel.naming ? kPendingNewLevelNamingOutlineColor : kPendingNewLevelOutlineColor,
+			pendingNewLevel.naming ? 1.1f : 0.8f);
+
+		glm::vec4 handleRect = getPendingNewLevelResizeHandleRect();
+		renderer.renderRectangle(handleRect, kPendingNewLevelHandleColor);
+		renderer.renderRectangleOutline(
+			handleRect,
+			{0.10f, 0.12f, 0.16f, 0.95f},
+			0.18f);
 	}
 
 	if (selectionDragActive)
@@ -1994,6 +2301,61 @@ void WorldEditor::drawLevelLabels(gl2d::Renderer2D &renderer)
 			{0.03f, 0.06f, 0.10f, 0.95f});
 	}
 
+	if (pendingNewLevel.active)
+	{
+		glm::vec2 screenPos = worldToScreen(
+			{pendingNewLevel.rect.x, pendingNewLevel.rect.y},
+			renderer) + glm::vec2(10.f, 12.f);
+		if (screenPos.x >= -280.f && screenPos.y >= -120.f &&
+			screenPos.x <= renderer.windowW + 280.f && screenPos.y <= renderer.windowH + 120.f)
+		{
+			char text[256] = {};
+			if (pendingNewLevel.naming)
+			{
+				std::snprintf(
+					text,
+					sizeof(text),
+					"%s%s\n%d x %d\nEnter to create",
+					pendingNewLevel.typedName.c_str(),
+					pendingNewLevel.typedName.empty() ? "" : "_",
+					static_cast<int>(pendingNewLevel.rect.z),
+					static_cast<int>(pendingNewLevel.rect.w));
+
+				if (pendingNewLevel.typedName.empty())
+				{
+					std::snprintf(
+						text,
+						sizeof(text),
+						"Type level name\n%d x %d\nEnter to create",
+						static_cast<int>(pendingNewLevel.rect.z),
+						static_cast<int>(pendingNewLevel.rect.w));
+				}
+			}
+			else
+			{
+				std::snprintf(
+					text,
+					sizeof(text),
+					"New Level\n%d x %d\nClick to name",
+					static_cast<int>(pendingNewLevel.rect.z),
+					static_cast<int>(pendingNewLevel.rect.w));
+			}
+
+			renderer.renderText(
+				screenPos,
+				text,
+				labelFont,
+				pendingNewLevel.naming
+					? gl2d::Color4f{0.96f, 0.98f, 1.0f, 1.f}
+					: gl2d::Color4f{0.78f, 0.82f, 0.90f, 0.96f},
+				24.f,
+				4.f,
+				3.f,
+				false,
+				{0.05f, 0.06f, 0.08f, 0.92f});
+		}
+	}
+
 	renderer.popCamera();
 }
 
@@ -2024,6 +2386,8 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 		ImGui::TextUnformatted("Tab returns to the previously loaded level");
 		ImGui::TextUnformatted("Click a level or door to select it");
 		ImGui::TextUnformatted("Drag empty space to box-select levels");
+		ImGui::TextUnformatted("Empty drag with no hits creates a gray new-level placeholder");
+		ImGui::TextUnformatted("Drag its bottom-right corner to resize before saving");
 		ImGui::TextUnformatted("Ctrl+drag a selected level to move the whole selection");
 		ImGui::TextUnformatted("Drag from a door onto another door to relink it");
 		ImGui::TextUnformatted("Ctrl+D duplicates the selected placed level");
@@ -2118,6 +2482,17 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 		else if (selectedPlacedLevels.size() > 1)
 		{
 			ImGui::TextUnformatted("Multiple levels selected");
+		}
+		else if (pendingNewLevel.active)
+		{
+			ImGui::TextUnformatted("Pending New Level");
+			ImGui::Text("Pos: %.0f, %.0f", pendingNewLevel.rect.x, pendingNewLevel.rect.y);
+			ImGui::Text("Size: %d x %d",
+				static_cast<int>(pendingNewLevel.rect.z),
+				static_cast<int>(pendingNewLevel.rect.w));
+			ImGui::TextUnformatted(pendingNewLevel.naming
+				? "Typing name in the world view"
+				: "Click the gray room to type its name");
 		}
 		else if (!selectedPlacedLevelName.empty() && world.levels.find(selectedPlacedLevelName) != world.levels.end())
 		{
@@ -2217,6 +2592,7 @@ void WorldEditor::drawLevelFilesWindow(gl2d::Renderer2D &renderer)
 
 				if (ImGui::Selectable(label.c_str(), selected))
 				{
+					clearPendingNewLevel();
 					selectedLevelName = file.name;
 				}
 
