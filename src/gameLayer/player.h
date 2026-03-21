@@ -9,12 +9,15 @@ struct Player
 	float smoothedMoveInput = 0.f;
 	float coyoteTimer = 0.f;
 	float jumpBufferTimer = 0.f;
+	bool doubleJumpAvailable = true;
+	bool glideArmedFromDoubleJump = false;
 	int wallGrabSide = 0;
 	int lastWallGrabSide = 0;
 	int rememberedWallInputSide = 0;
 	float rememberedWallInputTimer = 0.f;
 	float wallRegrabTimer = 0.f;
 	float wallGrabLockTimer = 0.f;
+	float wallGrabHoldTimer = 0.f;
 	float wallJumpCarryVelocity = 0.f;
 	int lastMoveDirection = 1;
 	bool dashActive = false;

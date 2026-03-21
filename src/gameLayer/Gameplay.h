@@ -21,7 +21,8 @@ struct Gameplay
 		float dashDuration = 0.18f; // How long the scripted dash movement lasts.
 		float dashCooldownTime = 0.18f; // Delay after a dash before another one can start.
 		float jumpHeight = 11.f; // Ground jump height in tiles.
-		float jumpRiseGravityMultiplier = 1.6f; // Upward gravity multiplier. Higher = snappier jump rise at the same height. (jump snappiness)
+		float doubleJumpHeight = 9.f; // Air jump height for the one extra jump.
+		float jumpRiseGravityMultiplier = 1.62f; // Upward gravity multiplier. Higher = snappier jump rise at the same height. (jump snappiness)
 		float glideFallSpeed = 5.f; // Target falling speed while glide is fully active.
 		float glideEnterTime = 0.09f; // Small delay for easing from normal fall into the glide fall speed.
 		float wallJumpDetachDistance = 0.55f; // Instant shove away from the wall on wall jump.
@@ -29,6 +30,7 @@ struct Gameplay
 		float wallJumpCarryDrag = 56.f; // How fast that wall-jump sideways carry fades back to 0.
 		float gravity = 100.f; // Normal downward acceleration.
 		float maxFallSpeed = 38.f; // Fastest normal falling speed.
+		float wallGrabHoldTime = 0.20f; // How long a fresh wall grab hangs in place before the slide starts.
 		float wallSlideGravity = 18.f; // Downward acceleration while holding a wall.
 		float wallSlideSpeed = 8.f; // Top falling speed while wall sliding.
 		float wallClimbDuration = 0.18f; // Base time for a full ledge climb from the wall onto the top.
@@ -41,6 +43,7 @@ struct Gameplay
 		float cameraZoom = 32.f; // Gameplay camera zoom.
 		bool enableDash = true; // Allows air and ground dashes.
 		bool enableSprint = true; // Allows sprint input to change move speed.
+		bool enableDoubleJump = true; // Allows one extra jump while airborne.
 		bool enableGlide = true; // Allows a second jump press while falling to slow the descent.
 		bool enableWallGrab = true; // Allows wall grabbing, sliding, and wall jumps.
 		bool enableWallClimb = true; // Allows automatic ledge climbs when airborne and pressing into a wall.

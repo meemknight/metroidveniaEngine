@@ -14,6 +14,7 @@ namespace
 	constexpr float kPlayerHeight = 5.f;
 	constexpr float kWallProbeWidth = 0.20f;
 	constexpr float kWallProbeInsetY = 0.45f;
+	constexpr float kWallClimbWallPadding = 0.30f;
 	constexpr float kMeasureCameraMoveSpeed = 36.f;
 	constexpr float kMeasureCameraZoomSpeed = 40.f;
 	constexpr float kMinMeasureCameraZoom = 4.f;
@@ -21,7 +22,6 @@ namespace
 	constexpr float kDashJumpCancelThreshold = 0.80f;
 	constexpr float kMinWallClimbDuration = 0.05f;
 	constexpr float kWallClimbVerticalPhase = 0.55f;
-	constexpr float kWallClimbGrabStartAllowance = 0.85f;
 	constexpr float kZiplineAttachDistance = 0.45f;
 	constexpr float kZiplineDetachDelay = 0.12f;
 
@@ -153,7 +153,7 @@ namespace
 		return roomRectHitsSolid(room, probe);
 	}
 
-	bool playerTouchesWallOnSide(Player const &player, Room const &room, int side)
+	bool playerTouchesWallOnSide(Player const &player, Room const &room, int side, float extraDistance = 0.f)
 	{
 		glm::vec4 bounds = player.physics.transform.getAABB();
 		glm::vec4 probe = {};
@@ -162,13 +162,13 @@ namespace
 
 		if (side < 0)
 		{
-			probe.x = bounds.x - kWallProbeWidth;
-			probe.z = kWallProbeWidth + 0.02f;
+			probe.x = bounds.x - (kWallProbeWidth + extraDistance);
+			probe.z = kWallProbeWidth + extraDistance + 0.02f;
 		}
 		else
 		{
 			probe.x = bounds.x + bounds.z - 0.02f;
-			probe.z = kWallProbeWidth + 0.02f;
+			probe.z = kWallProbeWidth + extraDistance + 0.02f;
 		}
 
 		return roomRectHitsSolid(room, probe);
@@ -291,99 +291,106 @@ namespace
 	bool findWallClimbTarget(Player const &player, Room const &room, int wallSide, WallClimbTarget &target)
 	{
 		glm::vec4 playerBounds = player.physics.transform.getAABB();
-		int wallX = wallSide > 0
-			? static_cast<int>(std::floor(playerBounds.x + playerBounds.z + 0.02f))
-			: static_cast<int>(std::floor(playerBounds.x - 0.02f));
-
-		if (wallX < 0 || wallX >= room.size.x)
-		{
-			return false;
-		}
-
 		int minY = std::clamp(static_cast<int>(std::floor(playerBounds.y)), 0, room.size.y - 1);
 		int maxY = std::clamp(static_cast<int>(std::floor(playerBounds.y + playerBounds.w - 0.02f)), 0, room.size.y - 1);
+		int startWallX = wallSide > 0
+			? static_cast<int>(std::floor(playerBounds.x + playerBounds.z + 0.02f))
+			: static_cast<int>(std::floor(playerBounds.x - 0.02f));
+		int endWallX = wallSide > 0
+			? static_cast<int>(std::floor(playerBounds.x + playerBounds.z + kWallClimbWallPadding + 0.02f))
+			: static_cast<int>(std::floor(playerBounds.x - kWallClimbWallPadding - 0.02f));
 
-		for (int y = minY; y <= maxY; y++)
+		int wallXStep = wallSide > 0 ? 1 : -1;
+		for (int wallX = startWallX;
+			wallSide > 0 ? wallX <= endWallX : wallX >= endWallX;
+			wallX += wallXStep)
 		{
-			if (!room.getBlockUnsafe(wallX, y).solid)
+			if (wallX < 0 || wallX >= room.size.x)
 			{
 				continue;
 			}
 
-			if (y > 0 && room.getBlockUnsafe(wallX, y - 1).solid)
+			for (int y = minY; y <= maxY; y++)
 			{
-				continue;
+				if (!room.getBlockUnsafe(wallX, y).solid)
+				{
+					continue;
+				}
+
+				if (y > 0 && room.getBlockUnsafe(wallX, y - 1).solid)
+				{
+					continue;
+				}
+
+				float ledgeTopY = static_cast<float>(y);
+				bool grabbedOnSameWall = player.wallGrabSide == wallSide;
+				// If the player is already grabbing this wall, the touched top wall
+				// tile is enough to allow the mantle. That keeps wall grab from
+				// blocking the climb just because the slide pinned the player a bit
+				// lower than the non-grab ledge test expects.
+				if (!grabbedOnSameWall && playerBounds.y + 0.02f >= ledgeTopY)
+				{
+					continue;
+				}
+
+				glm::vec2 endCenter = {
+					wallSide > 0
+						? wallX + kPlayerWidth * 0.5f
+						: wallX + 1.f - kPlayerWidth * 0.5f,
+					ledgeTopY - kPlayerHeight * 0.5f
+				};
+
+				// If the player is already basically standing on that top surface,
+				// don't start an extra mantle animation.
+				if (player.physics.transform.pos.y <= endCenter.y + 0.05f)
+				{
+					continue;
+				}
+
+				glm::vec4 endRect = getPlayerRectAtCenter(endCenter);
+				if (!playerRectFitsInsideRoom(room, endRect) || roomRectHitsSolid(room, endRect))
+				{
+					continue;
+				}
+
+				if (!playerRectHasGroundSupport(room, endRect))
+				{
+					continue;
+				}
+
+				glm::vec2 cornerCenter = {player.physics.transform.pos.x, endCenter.y};
+				glm::vec4 cornerRect = getPlayerRectAtCenter(cornerCenter);
+				if (!playerRectFitsInsideRoom(room, cornerRect) || roomRectHitsSolid(room, cornerRect))
+				{
+					continue;
+				}
+
+				glm::vec4 verticalSweep = {
+					cornerRect.x,
+					std::min(playerBounds.y, cornerRect.y),
+					cornerRect.z,
+					std::max(playerBounds.y + playerBounds.w, cornerRect.y + cornerRect.w) - std::min(playerBounds.y, cornerRect.y)
+				};
+				if (roomRectHitsSolid(room, verticalSweep))
+				{
+					continue;
+				}
+
+				glm::vec4 horizontalSweep = {
+					std::min(cornerRect.x, endRect.x),
+					endRect.y,
+					std::max(cornerRect.x + cornerRect.z, endRect.x + endRect.z) - std::min(cornerRect.x, endRect.x),
+					endRect.w
+				};
+				if (roomRectHitsSolid(room, horizontalSweep))
+				{
+					continue;
+				}
+
+				target.cornerCenter = cornerCenter;
+				target.endCenter = endCenter;
+				return true;
 			}
-
-			float ledgeTopY = static_cast<float>(y);
-			float allowedTopBelowLedge = player.wallGrabSide == wallSide
-				? kWallClimbGrabStartAllowance
-				: -0.02f;
-			// Wall grab can freeze the player slightly below the lip, so give
-			// grabbed climbs a small allowance instead of requiring the top of
-			// the player to already be fully above the ledge.
-			if (playerBounds.y > ledgeTopY + allowedTopBelowLedge)
-			{
-				continue;
-			}
-
-			glm::vec2 endCenter = {
-				wallSide > 0
-					? wallX + kPlayerWidth * 0.5f
-					: wallX + 1.f - kPlayerWidth * 0.5f,
-				ledgeTopY - kPlayerHeight * 0.5f
-			};
-
-			// If the player is already basically standing on that top surface,
-			// don't start an extra mantle animation.
-			if (player.physics.transform.pos.y <= endCenter.y + 0.05f)
-			{
-				continue;
-			}
-
-			glm::vec4 endRect = getPlayerRectAtCenter(endCenter);
-			if (!playerRectFitsInsideRoom(room, endRect) || roomRectHitsSolid(room, endRect))
-			{
-				continue;
-			}
-
-			if (!playerRectHasGroundSupport(room, endRect))
-			{
-				continue;
-			}
-
-			glm::vec2 cornerCenter = {player.physics.transform.pos.x, endCenter.y};
-			glm::vec4 cornerRect = getPlayerRectAtCenter(cornerCenter);
-			if (!playerRectFitsInsideRoom(room, cornerRect) || roomRectHitsSolid(room, cornerRect))
-			{
-				continue;
-			}
-
-			glm::vec4 verticalSweep = {
-				cornerRect.x,
-				std::min(playerBounds.y, cornerRect.y),
-				cornerRect.z,
-				std::max(playerBounds.y + playerBounds.w, cornerRect.y + cornerRect.w) - std::min(playerBounds.y, cornerRect.y)
-			};
-			if (roomRectHitsSolid(room, verticalSweep))
-			{
-				continue;
-			}
-
-			glm::vec4 horizontalSweep = {
-				std::min(cornerRect.x, endRect.x),
-				endRect.y,
-				std::max(cornerRect.x + cornerRect.z, endRect.x + endRect.z) - std::min(cornerRect.x, endRect.x),
-				endRect.w
-			};
-			if (roomRectHitsSolid(room, horizontalSweep))
-			{
-				continue;
-			}
-
-			target.cornerCenter = cornerCenter;
-			target.endCenter = endCenter;
-			return true;
 		}
 
 		return false;
@@ -530,6 +537,7 @@ void Gameplay::fillSolidRect(int minX, int minY, int maxX, int maxY)
 void Gameplay::respawnPlayer()
 {
 	player = {};
+	player.doubleJumpAvailable = tuning.enableDoubleJump;
 	player.physics.transform.w = kPlayerWidth;
 	player.physics.transform.h = kPlayerHeight;
 	player.physics.teleport(spawnPoint);
@@ -873,7 +881,9 @@ void Gameplay::startDash(int direction)
 	player.dashStartX = player.physics.transform.pos.x;
 	player.dashCooldownTimer = tuning.dashCooldownTime;
 	player.wallGrabSide = 0;
+	player.wallGrabHoldTimer = 0.f;
 	player.wallJumpCarryVelocity = 0.f;
+	player.glideArmedFromDoubleJump = false;
 	player.physics.velocity = {};
 	player.physics.acceleration = {};
 
@@ -950,8 +960,10 @@ bool Gameplay::tryStartZiplineRide()
 	player.ziplineDistance = target.distanceAlong;
 	player.ziplineSpeed = std::max(0.f, glm::dot(incomingVelocity, target.slide.downhillDirection));
 	player.wallGrabSide = 0;
+	player.wallGrabHoldTimer = 0.f;
 	player.lastWallGrabSide = 0;
 	player.wallJumpCarryVelocity = 0.f;
+	player.glideArmedFromDoubleJump = false;
 	player.dashActive = false;
 	player.jumpQueuedAfterDash = false;
 	player.physics.transform.pos = {
@@ -1119,7 +1131,7 @@ bool Gameplay::tryStartWallClimb(float moveInput)
 		return false;
 	}
 
-	if (!playerTouchesWallOnSide(player, room, wallSide))
+	if (!playerTouchesWallOnSide(player, room, wallSide, kWallClimbWallPadding))
 	{
 		return false;
 	}
@@ -1156,10 +1168,12 @@ void Gameplay::startWallClimb(int wallSide, glm::vec2 cornerCenter, glm::vec2 en
 		tuning.wallClimbDuration * std::max(distanceRatio, 0.20f));
 
 	player.wallGrabSide = 0;
+	player.wallGrabHoldTimer = 0.f;
 	player.lastWallGrabSide = 0;
 	player.wallJumpCarryVelocity = 0.f;
 	player.jumpBufferTimer = 0.f;
 	player.jumpQueuedAfterDash = false;
+	player.glideArmedFromDoubleJump = false;
 	player.coyoteTimer = 0.f;
 	player.physics.velocity = {};
 	player.physics.acceleration = {};
@@ -1214,6 +1228,7 @@ void Gameplay::updateWallGrabState(float moveInput)
 	if (!tuning.enableWallGrab)
 	{
 		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
 		player.lastWallGrabSide = 0;
 		player.rememberedWallInputSide = 0;
 		player.rememberedWallInputTimer = 0.f;
@@ -1223,11 +1238,13 @@ void Gameplay::updateWallGrabState(float moveInput)
 	if (player.physics.downTouch)
 	{
 		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
 		player.lastWallGrabSide = 0;
 		return;
 	}
 
-	int desiredWallSide = getMoveDirection(moveInput);
+	int inputWallSide = getMoveDirection(moveInput);
+	int desiredWallSide = inputWallSide;
 	if (desiredWallSide == 0 && player.rememberedWallInputTimer > 0.f)
 	{
 		desiredWallSide = player.rememberedWallInputSide;
@@ -1236,16 +1253,18 @@ void Gameplay::updateWallGrabState(float moveInput)
 	if (player.wallGrabSide != 0)
 	{
 		bool stillTouchingGrabWall = playerTouchesWallOnSide(player, room, player.wallGrabSide);
-		bool stillHoldingTowardsWall = desiredWallSide == player.wallGrabSide;
 
-		if (!stillTouchingGrabWall || !stillHoldingTowardsWall)
+		if (!stillTouchingGrabWall)
 		{
 			player.wallGrabSide = 0;
+			player.wallGrabHoldTimer = 0.f;
 		}
 		else
 		{
 			WallClimbTarget climbTarget = {};
-			if (tuning.enableWallClimb && findWallClimbTarget(player, room, player.wallGrabSide, climbTarget))
+			if (inputWallSide == player.wallGrabSide &&
+				tuning.enableWallClimb &&
+				findWallClimbTarget(player, room, player.wallGrabSide, climbTarget))
 			{
 				startWallClimb(player.wallGrabSide, climbTarget.cornerCenter, climbTarget.endCenter);
 			}
@@ -1288,6 +1307,7 @@ void Gameplay::updateWallGrabState(float moveInput)
 	// Wall grabs snap the vertical speed back to a controlled slide so the player
 	// can catch the wall cleanly before the slower fall ramps in again.
 	player.wallGrabSide = canGrabLeftWall ? -1 : 1;
+	player.wallGrabHoldTimer = tuning.wallGrabHoldTime;
 	player.wallJumpCarryVelocity = 0.f;
 	player.physics.velocity.y = 0.f;
 }
@@ -1301,6 +1321,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 
 	float jumpRiseGravity = tuning.gravity * std::max(tuning.jumpRiseGravityMultiplier, 0.01f);
 	float jumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.jumpHeight);
+	float doubleJumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.doubleJumpHeight);
 
 	player.dashCooldownTimer -= deltaTime;
 	player.dashCooldownTimer = std::max(player.dashCooldownTimer, 0.f);
@@ -1349,6 +1370,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	else
 	{
 		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
 		player.lastWallGrabSide = 0;
 		player.rememberedWallInputSide = 0;
 		player.rememberedWallInputTimer = 0.f;
@@ -1359,9 +1381,12 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	if (grounded)
 	{
 		player.coyoteTimer = tuning.coyoteTime;
+		player.doubleJumpAvailable = tuning.enableDoubleJump;
+		player.glideArmedFromDoubleJump = false;
 		player.wallJumpCarryVelocity = 0.f;
 		player.wallRegrabTimer = 0.f;
 		player.wallGrabLockTimer = 0.f;
+		player.wallGrabHoldTimer = 0.f;
 	}
 	else
 	{
@@ -1377,6 +1402,13 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	{
 		player.glideActive = false;
 		player.glideTimer = 0.f;
+		player.glideArmedFromDoubleJump = false;
+	}
+
+	if (!tuning.enableDoubleJump)
+	{
+		player.doubleJumpAvailable = false;
+		player.glideArmedFromDoubleJump = false;
 	}
 
 	if (jumpPressed)
@@ -1471,6 +1503,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.physics.downTouch = false;
 		player.coyoteTimer = 0.f;
 		player.jumpBufferTimer = 0.f;
+		player.glideArmedFromDoubleJump = false;
 	}
 
 	if (player.wallGrabSide == 0 && player.jumpBufferTimer > 0.f && player.coyoteTimer > 0.f)
@@ -1479,25 +1512,67 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.physics.downTouch = false;
 		player.coyoteTimer = 0.f;
 		player.jumpBufferTimer = 0.f;
+		player.glideArmedFromDoubleJump = false;
+		player.wallGrabHoldTimer = 0.f;
 		player.wallGrabLockTimer = tuning.wallGrabDelayAfterGroundJump;
+	}
+
+	if (player.wallGrabSide != 0 && downPressed)
+	{
+		int releasedWallSide = player.wallGrabSide;
+		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
+		player.lastWallGrabSide = releasedWallSide;
+		player.wallRegrabTimer = tuning.wallRegrabTime;
+		player.rememberedWallInputSide = 0;
+		player.rememberedWallInputTimer = 0.f;
+	}
+
+	bool canDoubleJump =
+		tuning.enableDoubleJump &&
+		player.doubleJumpAvailable &&
+		player.wallGrabSide == 0 &&
+		!grounded &&
+		player.coyoteTimer <= 0.f &&
+		!player.dashActive &&
+		!player.wallClimbActive &&
+		!player.ziplineActive &&
+		player.jumpBufferTimer > 0.f;
+	if (canDoubleJump)
+	{
+		// Double jump spends the buffered air jump before glide gets a chance so
+		// the second jump press always prioritizes the extra jump.
+		player.physics.velocity.y = -doubleJumpSpeed;
+		player.physics.downTouch = false;
+		player.jumpBufferTimer = 0.f;
+		player.doubleJumpAvailable = false;
+		player.glideArmedFromDoubleJump = true;
+		player.glideActive = false;
+		player.glideTimer = 0.f;
+		player.wallGrabHoldTimer = 0.f;
 	}
 
 	bool canStartGlide =
 		tuning.enableGlide &&
-		jumpPressed &&
 		!grounded &&
 		player.coyoteTimer <= 0.f &&
 		player.wallGrabSide == 0 &&
 		!player.dashActive &&
 		!player.wallClimbActive &&
 		!player.ziplineActive &&
-		player.physics.velocity.y > 0.01f;
+		player.physics.velocity.y > 0.01f &&
+		(
+			(player.glideArmedFromDoubleJump && jumpHeld) ||
+			(jumpPressed && !player.doubleJumpAvailable)
+		);
 	if (canStartGlide)
 	{
-		// Glide is a second jump press while falling, so it should not also keep
-		// a buffered ground jump waiting for the next landing.
+		// Glide can come either from a fresh falling jump press or from holding
+		// the same press that triggered the double jump once the player starts
+		// falling again.
 		player.glideActive = true;
 		player.glideTimer = 0.f;
+		player.glideArmedFromDoubleJump = false;
 		player.jumpBufferTimer = 0.f;
 	}
 
@@ -1515,6 +1590,10 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	{
 		player.glideActive = false;
 		player.glideTimer = 0.f;
+	}
+	if (!jumpHeld && player.glideArmedFromDoubleJump)
+	{
+		player.glideArmedFromDoubleJump = false;
 	}
 
 	if (!jumpHeld && player.physics.velocity.y < 0.f)
@@ -1552,8 +1631,16 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.glideActive = false;
 		player.glideTimer = 0.f;
 		player.wallJumpCarryVelocity = 0.f;
-		player.physics.velocity.y += tuning.wallSlideGravity * deltaTime;
-		player.physics.velocity.y = std::min(player.physics.velocity.y, tuning.wallSlideSpeed);
+		player.wallGrabHoldTimer = std::max(player.wallGrabHoldTimer - deltaTime, 0.f);
+		if (player.wallGrabHoldTimer > 0.f)
+		{
+			player.physics.velocity.y = 0.f;
+		}
+		else
+		{
+			player.physics.velocity.y += tuning.wallSlideGravity * deltaTime;
+			player.physics.velocity.y = std::min(player.physics.velocity.y, tuning.wallSlideSpeed);
+		}
 	}
 
 	player.physics.velocity.x = 0.f;
@@ -1564,6 +1651,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	{
 		player.glideActive = false;
 		player.glideTimer = 0.f;
+		player.glideArmedFromDoubleJump = false;
 	}
 	if (tryStartZiplineRide())
 	{
@@ -1767,6 +1855,8 @@ void Gameplay::drawDebugWindow()
 		ImGui::TextUnformatted("` toggles between gameplay and the last editor mode");
 		ImGui::TextUnformatted("Shift presses dash, holding Shift keeps sprint on");
 		ImGui::TextUnformatted("Controller: LStick/DPad move, A jumps, RT dashes");
+		ImGui::TextUnformatted("Jump again in air to double jump, then hold to glide");
+		ImGui::TextUnformatted("Wall grab latches once started, Down drops it");
 		ImGui::TextUnformatted("Press jump again while falling to glide");
 		ImGui::TextUnformatted("M enters measure mode, Escape resumes gameplay");
 		ImGui::TextUnformatted("Measure mode: WASD / Arrows move camera, Q/E zoom");
@@ -1790,6 +1880,7 @@ void Gameplay::drawDebugWindow()
 		ImGui::TextUnformatted("Player");
 		ImGui::Checkbox("Enable Dash", &tuning.enableDash);
 		ImGui::Checkbox("Enable Sprint", &tuning.enableSprint);
+		ImGui::Checkbox("Enable Double Jump", &tuning.enableDoubleJump);
 		ImGui::Checkbox("Enable Glide", &tuning.enableGlide);
 		ImGui::Checkbox("Enable Wall Grab", &tuning.enableWallGrab);
 		ImGui::Checkbox("Enable Wall Climb", &tuning.enableWallClimb);
@@ -1801,6 +1892,7 @@ void Gameplay::drawDebugWindow()
 		ImGui::SliderFloat("Dash Time", &tuning.dashDuration, 0.02f, 0.40f, "%.3f");
 		ImGui::SliderFloat("Dash Cooldown", &tuning.dashCooldownTime, 0.f, 1.f, "%.2f");
 		ImGui::SliderFloat("Jump Height", &tuning.jumpHeight, 0.5f, 20.f, "%.2f");
+		ImGui::SliderFloat("Double Jump Height", &tuning.doubleJumpHeight, 0.5f, 20.f, "%.2f");
 		ImGui::SliderFloat("Jump Snappiness", &tuning.jumpRiseGravityMultiplier, 0.25f, 4.f, "%.2f");
 		ImGui::SliderFloat("Glide Fall Speed", &tuning.glideFallSpeed, 0.5f, 30.f, "%.2f");
 		ImGui::SliderFloat("Glide Enter Time", &tuning.glideEnterTime, 0.f, 0.20f, "%.3f");
@@ -1809,6 +1901,7 @@ void Gameplay::drawDebugWindow()
 		ImGui::SliderFloat("Wall Jump Drag", &tuning.wallJumpCarryDrag, 1.f, 120.f, "%.2f");
 		ImGui::SliderFloat("Gravity", &tuning.gravity, 1.f, 120.f, "%.2f");
 		ImGui::SliderFloat("Max Fall Speed", &tuning.maxFallSpeed, 1.f, 80.f, "%.2f");
+		ImGui::SliderFloat("Wall Grab Hold", &tuning.wallGrabHoldTime, 0.f, 0.30f, "%.2f");
 		ImGui::SliderFloat("Wall Slide Gravity", &tuning.wallSlideGravity, 0.5f, 80.f, "%.2f");
 		ImGui::SliderFloat("Wall Slide Speed", &tuning.wallSlideSpeed, 0.5f, 30.f, "%.2f");
 		ImGui::SliderFloat("Wall Climb Time", &tuning.wallClimbDuration, 0.05f, 0.60f, "%.3f");
@@ -1820,8 +1913,10 @@ void Gameplay::drawDebugWindow()
 		ImGui::SliderFloat("Ground Jump Wall Delay", &tuning.wallGrabDelayAfterGroundJump, 0.f, 0.30f, "%.2f");
 		float jumpRiseGravity = tuning.gravity * std::max(tuning.jumpRiseGravityMultiplier, 0.01f);
 		float jumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.jumpHeight);
+		float doubleJumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.doubleJumpHeight);
 		float jumpApexTime = jumpSpeed / std::max(jumpRiseGravity, 0.001f);
 		ImGui::Text("Derived Jump Speed: %.2f", jumpSpeed);
+		ImGui::Text("Derived Double Jump Speed: %.2f", doubleJumpSpeed);
 		ImGui::Text("Derived Rise Gravity: %.2f", jumpRiseGravity);
 		ImGui::Text("Derived Apex Time: %.2f", jumpApexTime);
 
@@ -1842,8 +1937,9 @@ void Gameplay::drawDebugWindow()
 		ImGui::Text("Pos: %.2f, %.2f", player.physics.transform.pos.x, player.physics.transform.pos.y);
 		ImGui::Text("Vel: %.2f, %.2f", player.physics.velocity.x, player.physics.velocity.y);
 		ImGui::Text("Timers: coyote %.2f  buffer %.2f", player.coyoteTimer, player.jumpBufferTimer);
-		ImGui::Text("Wall: grab %d  regrab %.2f  lock %.2f",
+		ImGui::Text("Wall: grab %d  hold %.2f  regrab %.2f  lock %.2f",
 			player.wallGrabSide,
+			player.wallGrabHoldTimer,
 			player.wallRegrabTimer,
 			player.wallGrabLockTimer);
 		ImGui::Text("Climb: active %d  timer %.2f / %.2f",
@@ -1853,6 +1949,9 @@ void Gameplay::drawDebugWindow()
 		ImGui::Text("Glide: active %d  timer %.2f",
 			player.glideActive ? 1 : 0,
 			player.glideTimer);
+		ImGui::Text("Double Jump: available %d  glide arm %d",
+			player.doubleJumpAvailable ? 1 : 0,
+			player.glideArmedFromDoubleJump ? 1 : 0);
 		ImGui::Text("Zipline: active %d  speed %.2f  detach %.2f",
 			player.ziplineActive ? 1 : 0,
 			player.ziplineSpeed,
