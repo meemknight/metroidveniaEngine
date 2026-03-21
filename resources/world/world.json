@@ -159,6 +159,49 @@
 			"name": "level5",
 			"x": -107.04120635986328,
 			"y": -1.2303123474121094
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 1",
+					"linkedDoor": "door 2",
+					"linkedLevel": "zipRoom"
+				},
+				{
+					"door": "door 2",
+					"linkedDoor": "door 1",
+					"linkedLevel": "zipRoom"
+				}
+			],
+			"flags": 0,
+			"name": "zipRight",
+			"x": -186.3338165283203,
+			"y": 214.40921020507813
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 1",
+					"linkedDoor": "door 2",
+					"linkedLevel": "zipRight"
+				},
+				{
+					"door": "door 2",
+					"linkedDoor": "door 1",
+					"linkedLevel": "zipRight"
+				}
+			],
+			"flags": 0,
+			"name": "zipRoom",
+			"x": -275.07464599609375,
+			"y": 174.43576049804688
+		},
+		{
+			"doorLinks": [],
+			"flags": 0,
+			"name": "zipRoomTest",
+			"x": 0.7715377807617188,
+			"y": 181.71005249023438
 		}
 	]
 }

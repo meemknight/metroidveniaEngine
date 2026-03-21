@@ -36,6 +36,16 @@ struct WorldEditor
 		std::string doorName = {};
 	};
 
+	struct UndoSnapshot
+	{
+		WorldData world = {};
+		std::string selectedLevelName = {};
+		std::string selectedPlacedLevelName = {};
+		std::unordered_set<std::string> selectedPlacedLevels = {};
+		DoorReference selectedDoor = {};
+		bool worldDirty = false;
+	};
+
 	void init();
 	void cleanup();
 	void enter(gl2d::Renderer2D &renderer);
@@ -56,7 +66,7 @@ struct WorldEditor
 	void ensureBoundsForPlacement(WorldLevelPlacement const &placement);
 	void clampCamera(gl2d::Renderer2D &renderer);
 	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer);
-	void updateShortcuts(platform::Input &input, bool gameViewFocused);
+	void updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewFocused);
 	void updateDragging(platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewHovered);
 	void loadWorld();
 	void saveWorld();
@@ -74,12 +84,21 @@ struct WorldEditor
 	bool sanitizeDoorLinks();
 	void cleanupPreview(std::string const &levelName);
 	void cleanupAllPreviews();
+	void invalidateLevelPreview(std::string const &levelName);
+	void invalidateAllLevelPreviews();
 	void syncPreviewStorageToWorld();
 	void refreshPlacementSizesFromRooms();
 	void refreshLevelPreview(std::string const &levelName, gl2d::Renderer2D &renderer);
-	void refreshAllLevelPreviews(gl2d::Renderer2D &renderer);
+	bool refreshClosestMissingPreview(gl2d::Renderer2D &renderer);
 	void spawnSelectedLevel(gl2d::Renderer2D &renderer);
 	void duplicateSelectedLevel();
+	UndoSnapshot captureUndoSnapshot() const;
+	bool undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &b) const;
+	void resetUndoHistory();
+	void pushUndoSnapshot();
+	bool applyUndoSnapshot(UndoSnapshot const &snapshot, gl2d::Renderer2D &renderer);
+	void undo(gl2d::Renderer2D &renderer);
+	void redo(gl2d::Renderer2D &renderer);
 	std::string getPlacedLevelAt(glm::vec2 worldPoint);
 	void drawWorld(gl2d::Renderer2D &renderer);
 	void drawGrid(gl2d::Renderer2D &renderer);
@@ -102,7 +121,7 @@ struct WorldEditor
 	DoorReference selectedDoor = {};
 	DoorReference pendingLinkSourceDoor = {};
 	DoorReference pendingLinkHoveredDoor = {};
-	std::string pendingPreviewRefreshLevelName = {};
+	std::unordered_set<std::string> previewRefreshFailedLevels = {};
 	std::string worldMessage = {};
 	bool worldHasError = false;
 	bool worldDirty = false;
@@ -114,6 +133,7 @@ struct WorldEditor
 	float placedLevelDoubleClickTimer = 0.f;
 	bool pendingDoorLinkPick = false;
 	bool pendingDoorLinkDragActive = false;
+	bool placementDragMoved = false;
 	glm::vec2 dragGrabOffset = {};
 	// Box selection and grouped room dragging share these temporary interaction fields.
 	glm::vec2 selectionPressStartScreen = {};
@@ -128,4 +148,7 @@ struct WorldEditor
 	bool requestGameplayMode = false;
 	bool requestLevelEditorMode = false;
 	bool requestLoadedLevelEditorMode = false;
+	std::vector<UndoSnapshot> undoHistory = {};
+	int undoHistoryIndex = -1;
+	bool applyingUndoRedo = false;
 };

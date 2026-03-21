@@ -12,6 +12,7 @@
 
 namespace
 {
+	constexpr int kMaxUndoSteps = 100;
 	const glm::ivec2 kDefaultDoorSize = {2, 3};
 	const gl2d::Color4f kDoorFillColor = {1.0f, 0.56f, 0.12f, 0.14f};
 	const gl2d::Color4f kDoorOutlineColor = {1.0f, 0.64f, 0.18f, 0.72f};
@@ -19,6 +20,14 @@ namespace
 	const gl2d::Color4f kSelectedDoorOutlineColor = {1.0f, 0.78f, 0.28f, 1.0f};
 	const gl2d::Color4f kDoorSpawnFillColor = {1.0f, 0.88f, 0.18f, 0.24f};
 	const gl2d::Color4f kDoorSpawnOutlineColor = {1.0f, 0.92f, 0.32f, 0.96f};
+	const gl2d::Color4f kZiplineLineColor = {0.76f, 0.78f, 0.80f, 0.82f};
+	const gl2d::Color4f kSelectedZiplineLineColor = {0.92f, 0.94f, 0.98f, 1.0f};
+	const gl2d::Color4f kZiplinePointFillColor = {0.94f, 0.82f, 0.22f, 0.24f};
+	const gl2d::Color4f kZiplinePointOutlineColor = {0.98f, 0.88f, 0.34f, 0.94f};
+	const gl2d::Color4f kSelectedZiplinePointFillColor = {1.0f, 0.90f, 0.26f, 0.34f};
+	const gl2d::Color4f kSelectedZiplinePointOutlineColor = {1.0f, 0.96f, 0.42f, 1.0f};
+	constexpr float kZiplineLineWidth = 0.06f;
+	constexpr float kZiplinePointSize = 0.46f;
 
 	template<size_t N>
 	void copyStringToBuffer(char (&buffer)[N], std::string const &text)
@@ -144,7 +153,8 @@ namespace
 			ImGui::IsPopupOpen("Delete Level") ||
 			ImGui::IsPopupOpen("Discard Current Changes") ||
 			ImGui::IsPopupOpen("Resize Level") ||
-			ImGui::IsPopupOpen("Delete Door");
+			ImGui::IsPopupOpen("Delete Door") ||
+			ImGui::IsPopupOpen("Delete Zipline");
 	}
 #endif
 }
@@ -175,6 +185,7 @@ void LevelEditor::enter(Room &room, gl2d::Renderer2D &renderer)
 		{
 			setViewCenter({}, renderer);
 		}
+		resetUndoHistory(room);
 		return;
 	}
 
@@ -189,6 +200,8 @@ void LevelEditor::enter(Room &room, gl2d::Renderer2D &renderer)
 		camera.zoom = tuning.cameraZoom;
 		clampCamera(room, renderer);
 	}
+
+	resetUndoHistory(room);
 }
 
 void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room,
@@ -235,6 +248,10 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		{
 			clearDoorSelection();
 		}
+		if (selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+		{
+			clearZiplineSelection();
+		}
 
 		if (!cameraInitialized)
 		{
@@ -247,9 +264,10 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		setViewCenter({}, renderer);
 		clearMoveSelection();
 		clearDoorSelection();
+		clearZiplineSelection();
 	}
 
-	updateShortcuts(input, room, gameViewFocused);
+	updateShortcuts(input, renderer, room, gameViewFocused);
 	updateCamera(deltaTime, input, renderer, room);
 	updateHoveredTile(input, renderer, room);
 	updateTools(input, room, gameViewHovered);
@@ -262,6 +280,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		drawGrid(room, renderer);
 		drawMoveSelection(renderer);
 		drawDoors(room, renderer);
+		drawZiplines(room, renderer);
 		drawRectPreview(renderer);
 		drawHoveredTile(renderer);
 		drawMeasureText(renderer);
@@ -404,7 +423,7 @@ void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	}
 }
 
-void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameViewFocused)
+void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewFocused)
 {
 	bool hadMoveOperation = tool == moveTool &&
 		(rectDragActive || moveSelection.active || moveSelection.previewActive || moveSelection.dragging);
@@ -415,6 +434,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		ziplineCreateDragActive = false;
+		ziplinePointDragActive = false;
 		if (hadMoveOperation)
 		{
 			clearMoveSelection();
@@ -437,8 +458,44 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		ziplineCreateDragActive = false;
+		ziplinePointDragActive = false;
 		clearMoveSelection();
 	};
+
+	bool allowUndoRedoShortcut = !editorModalPopupOpen();
+	if (allowUndoRedoShortcut)
+	{
+		ImGuiIO &io = ImGui::GetIO();
+		allowUndoRedoShortcut = gameViewFocused || (!io.WantTextInput && !ImGui::IsAnyItemActive());
+	}
+
+	bool undoShortcut =
+		allowUndoRedoShortcut &&
+		input.isButtonHeld(platform::Button::LeftCtrl) &&
+		input.isButtonPressed(platform::Button::Z) &&
+		!input.isButtonHeld(platform::Button::LeftShift);
+	bool redoShortcut =
+		allowUndoRedoShortcut &&
+		(
+			(input.isButtonHeld(platform::Button::LeftCtrl) &&
+			 input.isButtonPressed(platform::Button::Y)) ||
+			(input.isButtonHeld(platform::Button::LeftCtrl) &&
+			 input.isButtonHeld(platform::Button::LeftShift) &&
+			 input.isButtonPressed(platform::Button::Z))
+		);
+
+	if (undoShortcut)
+	{
+		undo(room, renderer);
+		return;
+	}
+
+	if (redoShortcut)
+	{
+		redo(room, renderer);
+		return;
+	}
 
 	bool allowTabShortcut = !editorModalPopupOpen();
 	if (allowTabShortcut)
@@ -479,7 +536,14 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 
 	if (allowDeleteShortcut && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
 	{
-		requestDeleteSelectedDoor(room);
+		if (tool == ziplineTool)
+		{
+			requestDeleteSelectedZipline(room);
+		}
+		else
+		{
+			requestDeleteSelectedDoor(room);
+		}
 	}
 
 	if (!ImGui::isImguiWindowOpen())
@@ -490,6 +554,7 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 		return;
 	}
@@ -503,6 +568,7 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 	}
 #else
@@ -512,8 +578,33 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		ziplineCreateDragActive = false;
+		ziplinePointDragActive = false;
 		clearMoveSelection();
 	};
+
+	bool undoShortcut =
+		input.isButtonHeld(platform::Button::LeftCtrl) &&
+		input.isButtonPressed(platform::Button::Z) &&
+		!input.isButtonHeld(platform::Button::LeftShift);
+	bool redoShortcut =
+		(input.isButtonHeld(platform::Button::LeftCtrl) &&
+		 input.isButtonPressed(platform::Button::Y)) ||
+		(input.isButtonHeld(platform::Button::LeftCtrl) &&
+		 input.isButtonHeld(platform::Button::LeftShift) &&
+		 input.isButtonPressed(platform::Button::Z));
+
+	if (undoShortcut)
+	{
+		undo(room, renderer);
+		return;
+	}
+
+	if (redoShortcut)
+	{
+		redo(room, renderer);
+		return;
+	}
 
 	if (input.isButtonPressed(platform::Button::Tab))
 	{
@@ -536,6 +627,7 @@ void LevelEditor::updateShortcuts(platform::Input &input, Room &room, bool gameV
 	if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
+	if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 #endif
 }
@@ -549,6 +641,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		clearZiplineSelection();
 		return;
 	}
 
@@ -577,6 +670,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 			if (!input.isLMouseHeld())
 			{
 				doorSpawnDragActive = false;
+				pushUndoSnapshot(room);
 				return;
 			}
 
@@ -594,6 +688,10 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		{
 			if (!input.isLMouseHeld())
 			{
+				if (doorDragActive || doorResizeActive)
+				{
+					pushUndoSnapshot(room);
+				}
 				doorDragActive = false;
 				doorResizeActive = false;
 				return;
@@ -756,9 +854,99 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		return;
 	}
 
+	if (tool == ziplineTool)
+	{
+		if (selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+		{
+			clearZiplineSelection();
+		}
+
+		if (ziplinePointDragActive)
+		{
+			if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()) ||
+				selectedZiplinePoint < 0 || selectedZiplinePoint > 1)
+			{
+				clearZiplineSelection();
+				return;
+			}
+
+			if (!input.isLMouseHeld())
+			{
+				ziplinePointDragActive = false;
+				pushUndoSnapshot(room);
+				return;
+			}
+
+			if (hoveredTileValid)
+			{
+				moveSelectedZiplinePoint(room, hoveredTile);
+			}
+			return;
+		}
+
+		if (ziplineCreateDragActive)
+		{
+			if (hoveredTileValid)
+			{
+				ziplineCreateEnd = hoveredTile;
+			}
+
+			if (input.isLMouseReleased())
+			{
+				ziplineCreateDragActive = false;
+				if (hoveredTileValid && ziplineCreateStart != ziplineCreateEnd)
+				{
+					createZipline(room, ziplineCreateStart, ziplineCreateEnd);
+					pushUndoSnapshot(room);
+				}
+			}
+			return;
+		}
+
+		if (!input.isLMousePressed())
+		{
+			return;
+		}
+
+		int hoveredZiplineIndex = -1;
+		int hoveredZiplinePoint = -1;
+		if (getHoveredZiplinePoint(room, mouseWorldPosition, hoveredZiplineIndex, hoveredZiplinePoint))
+		{
+			selectedZiplineIndex = hoveredZiplineIndex;
+			selectedZiplinePoint = hoveredZiplinePoint;
+			ziplinePointDragActive = true;
+			doorActionMessage.clear();
+			doorActionHasError = false;
+			return;
+		}
+
+		if (!hoveredTileValid)
+		{
+			clearZiplineSelection();
+			return;
+		}
+
+		if (input.isButtonHeld(platform::Button::LeftCtrl))
+		{
+			clearZiplineSelection();
+			ziplineCreateDragActive = true;
+			ziplineCreateStart = hoveredTile;
+			ziplineCreateEnd = hoveredTile;
+			return;
+		}
+
+		clearZiplineSelection();
+		return;
+	}
+
 	if (tool == brushTool)
 	{
 		rectDragActive = false;
+
+		if (input.isLMousePressed() || input.isRMousePressed())
+		{
+			brushPaintActive = true;
+		}
 
 		if (input.isLMouseHeld() && hoveredTileValid)
 		{
@@ -769,13 +957,21 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		{
 			setBlock(room, hoveredTile.x, hoveredTile.y, false);
 		}
+
+		if (brushPaintActive && (input.isLMouseReleased() || input.isRMouseReleased()))
+		{
+			brushPaintActive = false;
+			pushUndoSnapshot(room);
+		}
 	}
 	else if (tool == noneTool)
 	{
 		rectDragActive = false;
+		brushPaintActive = false;
 	}
 	else if (tool == measureTool)
 	{
+		brushPaintActive = false;
 		if ((input.isLMousePressed() || input.isRMousePressed()) && hoveredTileValid)
 		{
 			rectDragActive = true;
@@ -795,6 +991,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 	}
 	else if (tool == rectTool)
 	{
+		brushPaintActive = false;
 		if ((input.isLMousePressed() || input.isRMousePressed()) && hoveredTileValid)
 		{
 			rectDragActive = true;
@@ -816,6 +1013,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		{
 			fillRect(room, rectDragStart, rectDragEnd, rectDragPlacesSolid);
 			rectDragActive = false;
+			pushUndoSnapshot(room);
 		}
 	}
 }
@@ -879,6 +1077,11 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	{
 		clampDoorToRoom(door, resizedRoom);
 	}
+	resizedRoom.ziplines = room.ziplines;
+	for (Zipline &zipline : resizedRoom.ziplines)
+	{
+		clampZiplineToRoom(zipline, resizedRoom);
+	}
 
 	room = resizedRoom;
 	pendingRoomSize = room.size;
@@ -887,6 +1090,8 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	clearMoveSelection();
 	doorDragActive = false;
 	doorResizeActive = false;
+	ziplineCreateDragActive = false;
+	ziplinePointDragActive = false;
 	if (selectedDoorIndex >= static_cast<int>(room.doors.size()))
 	{
 		clearDoorSelection();
@@ -895,7 +1100,12 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	{
 		syncSelectedDoorBuffer(room);
 	}
+	if (selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+	{
+		clearZiplineSelection();
+	}
 	levelDirty = true;
+	pushUndoSnapshot(room);
 }
 
 glm::vec4 LevelEditor::getRectPreview(glm::ivec2 a, glm::ivec2 b)
@@ -1030,6 +1240,7 @@ void LevelEditor::commitMoveSelection(Room &room)
 	}
 
 	clearMoveSelection();
+	pushUndoSnapshot(room);
 }
 
 void LevelEditor::clearDoorSelection()
@@ -1040,6 +1251,15 @@ void LevelEditor::clearDoorSelection()
 	doorSpawnDragActive = false;
 	doorDragGrabOffset = {};
 	selectedDoorName[0] = 0;
+}
+
+void LevelEditor::clearZiplineSelection()
+{
+	selectedZiplineIndex = -1;
+	selectedZiplinePoint = -1;
+	ziplineCreateDragActive = false;
+	ziplinePointDragActive = false;
+	pendingDeleteZiplineIndex = -1;
 }
 
 int LevelEditor::getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld)
@@ -1105,6 +1325,48 @@ bool LevelEditor::hoveredSelectedDoorResizeHandle(Room &room, glm::vec2 mouseWor
 		mouseWorld.y >= handleMin.y &&
 		mouseWorld.x <= handleMax.x &&
 		mouseWorld.y <= handleMax.y;
+}
+
+bool LevelEditor::getHoveredZiplinePoint(Room &room, glm::vec2 mouseWorld, int &ziplineIndex, int &pointIndex)
+{
+	auto pointContains = [&](Zipline const &zipline, int index)
+	{
+		glm::vec2 center = zipline.getPointCenter(index);
+		glm::vec2 half = glm::vec2(kZiplinePointSize * 0.75f);
+		return
+			mouseWorld.x >= center.x - half.x &&
+			mouseWorld.y >= center.y - half.y &&
+			mouseWorld.x <= center.x + half.x &&
+			mouseWorld.y <= center.y + half.y;
+	};
+
+	if (selectedZiplineIndex >= 0 && selectedZiplineIndex < static_cast<int>(room.ziplines.size()))
+	{
+		for (int index = 0; index < 2; index++)
+		{
+			if (pointContains(room.ziplines[selectedZiplineIndex], index))
+			{
+				ziplineIndex = selectedZiplineIndex;
+				pointIndex = index;
+				return true;
+			}
+		}
+	}
+
+	for (int i = static_cast<int>(room.ziplines.size()) - 1; i >= 0; i--)
+	{
+		for (int index = 0; index < 2; index++)
+		{
+			if (pointContains(room.ziplines[i], index))
+			{
+				ziplineIndex = i;
+				pointIndex = index;
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 std::string LevelEditor::getNextDoorName(Room const &room)
@@ -1230,6 +1492,7 @@ void LevelEditor::deleteSelectedDoor(Room &room)
 	doorActionHasError = false;
 	doorActionMessage = "Deleted selected door";
 	levelDirty = true;
+	pushUndoSnapshot(room);
 }
 
 void LevelEditor::moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position)
@@ -1256,6 +1519,72 @@ void LevelEditor::moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position)
 	doorActionHasError = false;
 	doorActionMessage = "Moved selected door player spawn";
 	levelDirty = true;
+}
+
+void LevelEditor::createZipline(Room &room, glm::ivec2 firstPoint, glm::ivec2 secondPoint)
+{
+	Zipline zipline = {};
+	zipline.points[0] = firstPoint;
+	zipline.points[1] = secondPoint;
+	clampZiplineToRoom(zipline, room);
+
+	room.ziplines.push_back(zipline);
+	selectedZiplineIndex = static_cast<int>(room.ziplines.size()) - 1;
+	selectedZiplinePoint = 1;
+	doorActionHasError = false;
+	doorActionMessage = "Created zipline";
+	levelDirty = true;
+}
+
+void LevelEditor::moveSelectedZiplinePoint(Room &room, glm::ivec2 position)
+{
+	if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()) ||
+		selectedZiplinePoint < 0 || selectedZiplinePoint > 1)
+	{
+		return;
+	}
+
+	Zipline &zipline = room.ziplines[selectedZiplineIndex];
+	glm::ivec2 clampedPosition = {
+		std::clamp(position.x, 0, std::max(room.size.x - 1, 0)),
+		std::clamp(position.y, 0, std::max(room.size.y - 1, 0))
+	};
+
+	if (zipline.points[selectedZiplinePoint] == clampedPosition)
+	{
+		return;
+	}
+
+	zipline.points[selectedZiplinePoint] = clampedPosition;
+	doorActionHasError = false;
+	doorActionMessage = "Moved zipline point";
+	levelDirty = true;
+}
+
+void LevelEditor::requestDeleteSelectedZipline(Room &room)
+{
+	if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+	{
+		return;
+	}
+
+	pendingDeleteZiplineIndex = selectedZiplineIndex;
+	pendingOpenDeleteZiplinePopup = true;
+}
+
+void LevelEditor::deleteSelectedZipline(Room &room)
+{
+	if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+	{
+		return;
+	}
+
+	room.ziplines.erase(room.ziplines.begin() + selectedZiplineIndex);
+	clearZiplineSelection();
+	doorActionHasError = false;
+	doorActionMessage = "Deleted selected zipline";
+	levelDirty = true;
+	pushUndoSnapshot(room);
 }
 
 void LevelEditor::syncSelectedDoorBuffer(Room &room)
@@ -1305,6 +1634,7 @@ void LevelEditor::applySelectedDoorName(Room &room)
 	doorActionHasError = false;
 	doorActionMessage = "Renamed selected door";
 	levelDirty = true;
+	pushUndoSnapshot(room);
 }
 
 void LevelEditor::clampDoorToRoom(Door &door, Room const &room)
@@ -1313,6 +1643,15 @@ void LevelEditor::clampDoorToRoom(Door &door, Room const &room)
 	door.size.y = std::max(door.size.y, 1);
 	door.playerSpawnPosition.x = std::clamp(door.playerSpawnPosition.x, 0, std::max(room.size.x - 1, 0));
 	door.playerSpawnPosition.y = std::clamp(door.playerSpawnPosition.y, 0, std::max(room.size.y - 1, 0));
+}
+
+void LevelEditor::clampZiplineToRoom(Zipline &zipline, Room const &room)
+{
+	for (glm::ivec2 &point : zipline.points)
+	{
+		point.x = std::clamp(point.x, 0, std::max(room.size.x - 1, 0));
+		point.y = std::clamp(point.y, 0, std::max(room.size.y - 1, 0));
+	}
 }
 
 void LevelEditor::clampCamera(Room &room, gl2d::Renderer2D &renderer)
@@ -1497,6 +1836,64 @@ void LevelEditor::drawDoors(Room &room, gl2d::Renderer2D &renderer)
 	renderer.popCamera();
 }
 
+void LevelEditor::drawZiplines(Room &room, gl2d::Renderer2D &renderer)
+{
+	// Ziplines stay visible while editing so their travel path is easy to line up
+	// against the room geometry and doors.
+	for (int i = 0; i < static_cast<int>(room.ziplines.size()); i++)
+	{
+		Zipline const &zipline = room.ziplines[i];
+		bool selected = i == selectedZiplineIndex;
+		gl2d::Color4f lineColor = selected ? kSelectedZiplineLineColor : kZiplineLineColor;
+		gl2d::Color4f pointFillColor = selected ? kSelectedZiplinePointFillColor : kZiplinePointFillColor;
+		gl2d::Color4f pointOutlineColor = selected ? kSelectedZiplinePointOutlineColor : kZiplinePointOutlineColor;
+
+		renderer.renderLine(
+			zipline.getPointCenter(0),
+			zipline.getPointCenter(1),
+			lineColor,
+			selected ? kZiplineLineWidth * 1.35f : kZiplineLineWidth);
+
+		for (int pointIndex = 0; pointIndex < 2; pointIndex++)
+		{
+			glm::vec2 pointMin = glm::vec2(zipline.points[pointIndex]) + glm::vec2(0.5f - kZiplinePointSize * 0.5f);
+			renderer.renderRectangle(
+				{pointMin.x, pointMin.y, kZiplinePointSize, kZiplinePointSize},
+				pointFillColor);
+			renderer.renderRectangleOutline(
+				{pointMin.x, pointMin.y, kZiplinePointSize, kZiplinePointSize},
+				pointOutlineColor,
+				selected && pointIndex == selectedZiplinePoint ? 0.10f : 0.07f);
+		}
+	}
+
+	if (!ziplineCreateDragActive)
+	{
+		return;
+	}
+
+	Zipline preview = {};
+	preview.points[0] = ziplineCreateStart;
+	preview.points[1] = ziplineCreateEnd;
+	renderer.renderLine(
+		preview.getPointCenter(0),
+		preview.getPointCenter(1),
+		{0.92f, 0.94f, 0.98f, 0.95f},
+		kZiplineLineWidth * 1.35f);
+
+	for (int pointIndex = 0; pointIndex < 2; pointIndex++)
+	{
+		glm::vec2 pointMin = glm::vec2(preview.points[pointIndex]) + glm::vec2(0.5f - kZiplinePointSize * 0.5f);
+		renderer.renderRectangle(
+			{pointMin.x, pointMin.y, kZiplinePointSize, kZiplinePointSize},
+			{1.0f, 0.92f, 0.34f, 0.30f});
+		renderer.renderRectangleOutline(
+			{pointMin.x, pointMin.y, kZiplinePointSize, kZiplinePointSize},
+			{1.0f, 0.98f, 0.50f, 1.f},
+			0.08f);
+	}
+}
+
 void LevelEditor::drawHoveredTile(gl2d::Renderer2D &renderer)
 {
 	if (!hoveredTileValid)
@@ -1526,6 +1923,10 @@ void LevelEditor::drawHoveredTile(gl2d::Renderer2D &renderer)
 	if (tool == moveTool)
 	{
 		hoverColor = {0.30f, 0.88f, 1.0f, 0.95f};
+	}
+	if (tool == ziplineTool)
+	{
+		hoverColor = {1.0f, 0.88f, 0.34f, 0.95f};
 	}
 
 	renderer.renderRectangleOutline(
@@ -1687,14 +2088,18 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		bool hasSelectedDoor = hasLoadedLevel &&
 			selectedDoorIndex >= 0 &&
 			selectedDoorIndex < static_cast<int>(room.doors.size());
+		bool hasSelectedZipline = hasLoadedLevel &&
+			selectedZiplineIndex >= 0 &&
+			selectedZiplineIndex < static_cast<int>(room.ziplines.size());
 
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
 		ImGui::TextUnformatted("` toggles back to gameplay");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
+		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
 		ImGui::TextUnformatted("Ctrl+S saves the current level");
 		ImGui::TextUnformatted("Tab returns to the world editor");
-		ImGui::TextUnformatted("Escape cancels active move, rect, measure, or door drag input");
+		ImGui::TextUnformatted("Escape cancels active move, rect, measure, door, or zipline drag input");
 		if (!hasLoadedLevel)
 		{
 			ImGui::TextColored({1.f, 0.88f, 0.35f, 1.f}, "Load or create a level file before editing.");
@@ -1703,12 +2108,13 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		ImGui::Separator();
 		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
 		ImGui::TextUnformatted("Tools");
-		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
-		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
-		if (ImGui::RadioButton("Rect (3)", tool == rectTool)) { tool = rectTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
-		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
-		if (ImGui::RadioButton("Door (5)", tool == doorTool)) { tool = doorTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
-		if (ImGui::RadioButton("Move (6)", tool == moveTool)) { tool = moveTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; }
+		if (ImGui::RadioButton("None (1)", tool == noneTool)) { tool = noneTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Brush (2)", tool == brushTool)) { tool = brushTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Rect (3)", tool == rectTool)) { tool = rectTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Door (5)", tool == doorTool)) { tool = doorTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Move (6)", tool == moveTool)) { tool = moveTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Zipline (7)", tool == ziplineTool)) { tool = ziplineTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 
 		if (tool == noneTool)
 		{
@@ -1733,6 +2139,10 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 			{
 				ImGui::Text("Selection: %d x %d", moveSelection.size.x, moveSelection.size.y);
 			}
+		}
+		else if (tool == ziplineTool)
+		{
+			ImGui::TextUnformatted("Ctrl+drag adds a zipline, drag a point to move it, Del deletes the selected zipline");
 		}
 		else
 		{
@@ -1820,6 +2230,27 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 				? ImVec4(1.f, 0.45f, 0.35f, 1.f)
 				: ImVec4(1.0f, 0.84f, 0.32f, 1.f);
 			ImGui::TextColored(doorColor, "%s", doorActionMessage.c_str());
+		}
+
+		ImGui::Separator();
+		if (!hasLoadedLevel) { ImGui::BeginDisabled(); }
+		ImGui::TextUnformatted("Ziplines");
+		ImGui::Text("Count: %d", static_cast<int>(room.ziplines.size()));
+		if (hasSelectedZipline)
+		{
+			Zipline const &selectedZipline = room.ziplines[selectedZiplineIndex];
+			ImGui::Text("Point A: %d, %d", selectedZipline.points[0].x, selectedZipline.points[0].y);
+			ImGui::Text("Point B: %d, %d", selectedZipline.points[1].x, selectedZipline.points[1].y);
+			ImGui::Text("Selected Point: %c", selectedZiplinePoint == 0 ? 'A' : 'B');
+			if (ImGui::Button("Delete Selected Zipline"))
+			{
+				requestDeleteSelectedZipline(room);
+			}
+		}
+		else
+		{
+			ImGui::TextUnformatted("Selected: none");
+			ImGui::TextUnformatted("Pick Zipline (7), Ctrl+drag to add, then drag a point to edit it.");
 		}
 		if (!hasLoadedLevel) { ImGui::EndDisabled(); }
 
@@ -1917,6 +2348,40 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 			}
 			ImGui::EndPopup();
 		}
+
+		if (pendingOpenDeleteZiplinePopup)
+		{
+			ImGui::OpenPopup("Delete Zipline");
+			pendingOpenDeleteZiplinePopup = false;
+		}
+
+		if (ImGui::BeginPopupModal("Delete Zipline", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::TextUnformatted("Delete the selected zipline?");
+
+			if (ImGui::Button("Delete", {120.f, 0.f}))
+			{
+				selectedZiplineIndex = pendingDeleteZiplineIndex;
+				if (selectedZiplineIndex >= 0 && selectedZiplineIndex < static_cast<int>(room.ziplines.size()))
+				{
+					deleteSelectedZipline(room);
+				}
+				else
+				{
+					clearZiplineSelection();
+					doorActionHasError = true;
+					doorActionMessage = "That zipline no longer exists";
+				}
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				pendingDeleteZiplineIndex = -1;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 	ImGui::End();
 #endif
@@ -1998,6 +2463,7 @@ void LevelEditor::saveCurrentLevel(Room &room)
 		pendingDoorDeletes.clear();
 		pendingDoorRenames.clear();
 		levelDirty = false;
+		pushUndoSnapshot(room);
 	}
 }
 
@@ -2024,15 +2490,19 @@ void LevelEditor::loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearZiplineSelection();
 		doorActionMessage.clear();
 		doorActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeleteZiplineIndex = -1;
+		pendingOpenDeleteZiplinePopup = false;
 		pendingDoorDeletes.clear();
 		pendingDoorRenames.clear();
 		levelDirty = false;
 		copyStringToBuffer(renameName, result.levelName);
 		focusRoom(room, renderer);
+		resetUndoHistory(room);
 	}
 }
 
@@ -2047,6 +2517,7 @@ void LevelEditor::reloadCurrentLevel(Room &room, gl2d::Renderer2D &renderer)
 	selectedLevelName = currentLevelName;
 	loadSelectedLevel(room, renderer);
 	selectedLevelName = currentLevelName.empty() ? previousSelection : currentLevelName;
+	resetUndoHistory(room);
 }
 
 void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
@@ -2083,17 +2554,264 @@ void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearZiplineSelection();
 		doorActionMessage.clear();
 		doorActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeleteZiplineIndex = -1;
+		pendingOpenDeleteZiplinePopup = false;
 		pendingDoorDeletes.clear();
 		pendingDoorRenames.clear();
 		levelDirty = false;
 		newLevelName[0] = 0;
 		copyStringToBuffer(renameName, result.levelName);
 		focusRoom(room, renderer);
+		resetUndoHistory(room);
 	}
+}
+
+LevelEditor::UndoSnapshot LevelEditor::captureUndoSnapshot(Room &room) const
+{
+	UndoSnapshot snapshot = {};
+	snapshot.room = room;
+	snapshot.currentLevelName = currentLevelName;
+	snapshot.selectedLevelName = selectedLevelName;
+	snapshot.renameName = renameName;
+	snapshot.selectedDoorIndex = selectedDoorIndex;
+	snapshot.selectedDoorName = selectedDoorName;
+	snapshot.selectedZiplineIndex = selectedZiplineIndex;
+	snapshot.selectedZiplinePoint = selectedZiplinePoint;
+	snapshot.pendingRoomSize = pendingRoomSize;
+	snapshot.newLevelSize = newLevelSize;
+	snapshot.levelDirty = levelDirty;
+	snapshot.pendingDoorRenames = pendingDoorRenames;
+	snapshot.pendingDoorDeletes = pendingDoorDeletes;
+	return snapshot;
+}
+
+bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &b) const
+{
+	auto roomsMatch = [](Room const &lhs, Room const &rhs)
+	{
+		if (lhs.size != rhs.size || lhs.blocks.size() != rhs.blocks.size() ||
+			lhs.doors.size() != rhs.doors.size() || lhs.ziplines.size() != rhs.ziplines.size())
+		{
+			return false;
+		}
+
+		for (size_t i = 0; i < lhs.blocks.size(); i++)
+		{
+			if (lhs.blocks[i].solid != rhs.blocks[i].solid)
+			{
+				return false;
+			}
+		}
+
+		for (size_t i = 0; i < lhs.doors.size(); i++)
+		{
+			Door const &leftDoor = lhs.doors[i];
+			Door const &rightDoor = rhs.doors[i];
+			if (leftDoor.name != rightDoor.name ||
+				leftDoor.position != rightDoor.position ||
+				leftDoor.size != rightDoor.size ||
+				leftDoor.playerSpawnPosition != rightDoor.playerSpawnPosition)
+			{
+				return false;
+			}
+		}
+
+		for (size_t i = 0; i < lhs.ziplines.size(); i++)
+		{
+			Zipline const &leftZipline = lhs.ziplines[i];
+			Zipline const &rightZipline = rhs.ziplines[i];
+			if (leftZipline.points[0] != rightZipline.points[0] ||
+				leftZipline.points[1] != rightZipline.points[1])
+			{
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	auto renamesMatch = [](std::vector<PendingDoorRename> const &lhs, std::vector<PendingDoorRename> const &rhs)
+	{
+		if (lhs.size() != rhs.size())
+		{
+			return false;
+		}
+
+		for (size_t i = 0; i < lhs.size(); i++)
+		{
+			if (lhs[i].oldName != rhs[i].oldName || lhs[i].newName != rhs[i].newName)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	return
+		roomsMatch(a.room, b.room) &&
+		a.currentLevelName == b.currentLevelName &&
+		a.selectedLevelName == b.selectedLevelName &&
+		a.renameName == b.renameName &&
+		a.selectedDoorIndex == b.selectedDoorIndex &&
+		a.selectedDoorName == b.selectedDoorName &&
+		a.selectedZiplineIndex == b.selectedZiplineIndex &&
+		a.selectedZiplinePoint == b.selectedZiplinePoint &&
+		a.pendingRoomSize == b.pendingRoomSize &&
+		a.newLevelSize == b.newLevelSize &&
+		a.levelDirty == b.levelDirty &&
+		renamesMatch(a.pendingDoorRenames, b.pendingDoorRenames) &&
+		a.pendingDoorDeletes == b.pendingDoorDeletes;
+}
+
+void LevelEditor::resetUndoHistory(Room &room)
+{
+	undoHistory.clear();
+	undoHistoryIndex = -1;
+	pushUndoSnapshot(room);
+}
+
+void LevelEditor::pushUndoSnapshot(Room &room)
+{
+	if (applyingUndoRedo)
+	{
+		return;
+	}
+
+	UndoSnapshot snapshot = captureUndoSnapshot(room);
+	if (undoHistoryIndex >= 0 && undoHistoryIndex < static_cast<int>(undoHistory.size()) &&
+		undoSnapshotsMatch(undoHistory[undoHistoryIndex], snapshot))
+	{
+		return;
+	}
+
+	if (undoHistoryIndex + 1 < static_cast<int>(undoHistory.size()))
+	{
+		undoHistory.erase(undoHistory.begin() + undoHistoryIndex + 1, undoHistory.end());
+	}
+
+	undoHistory.push_back(snapshot);
+	undoHistoryIndex = static_cast<int>(undoHistory.size()) - 1;
+
+	if (static_cast<int>(undoHistory.size()) > kMaxUndoSteps)
+	{
+		undoHistory.erase(undoHistory.begin());
+		undoHistoryIndex--;
+	}
+}
+
+bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl2d::Renderer2D &renderer)
+{
+	if (currentLevelName != snapshot.currentLevelName)
+	{
+		if (currentLevelName.empty() || snapshot.currentLevelName.empty())
+		{
+			fileActionHasError = true;
+			fileActionMessage = "Undo/redo can't switch to an unloaded level state";
+			return false;
+		}
+
+		RoomIoResult renameResult = renameRoomFile(currentLevelName.c_str(), snapshot.currentLevelName.c_str());
+		if (!renameResult.success)
+		{
+			fileActionHasError = true;
+			fileActionMessage = "Undo/redo couldn't rename the level file: " + renameResult.message;
+			return false;
+		}
+
+		WorldIoResult worldResult = renameLevelReferencesInWorld(currentLevelName.c_str(), snapshot.currentLevelName.c_str());
+		if (!worldResult.success)
+		{
+			fileActionHasError = true;
+			fileActionMessage = "Undo/redo couldn't update world level references: " + worldResult.message;
+			return false;
+		}
+	}
+
+	room = snapshot.room;
+	currentLevelName = snapshot.currentLevelName;
+	selectedLevelName = snapshot.selectedLevelName;
+	pendingRoomSize = snapshot.pendingRoomSize;
+	newLevelSize = snapshot.newLevelSize;
+	levelDirty = snapshot.levelDirty;
+	pendingDoorRenames = snapshot.pendingDoorRenames;
+	pendingDoorDeletes = snapshot.pendingDoorDeletes;
+	copyStringToBuffer(renameName, snapshot.renameName);
+
+	rectDragActive = false;
+	brushPaintActive = false;
+	clearMoveSelection();
+	clearDoorSelection();
+	clearZiplineSelection();
+	selectedDoorIndex = snapshot.selectedDoorIndex;
+	if (selectedDoorIndex >= 0 && selectedDoorIndex < static_cast<int>(room.doors.size()))
+	{
+		copyStringToBuffer(selectedDoorName, snapshot.selectedDoorName);
+	}
+	else
+	{
+		selectedDoorName[0] = 0;
+	}
+	selectedZiplineIndex = snapshot.selectedZiplineIndex;
+	selectedZiplinePoint = snapshot.selectedZiplinePoint;
+	if (selectedZiplineIndex < 0 || selectedZiplineIndex >= static_cast<int>(room.ziplines.size()))
+	{
+		clearZiplineSelection();
+	}
+
+	pendingDeleteDoorName.clear();
+	pendingOpenDeleteDoorPopup = false;
+	pendingDeleteZiplineIndex = -1;
+	pendingOpenDeleteZiplinePopup = false;
+	hoveredTileValid = false;
+	syncPendingRoomSize(room);
+	if (cameraInitialized)
+	{
+		clampCamera(room, renderer);
+	}
+
+	fileActionHasError = false;
+	fileActionMessage = {};
+	return true;
+}
+
+void LevelEditor::undo(Room &room, gl2d::Renderer2D &renderer)
+{
+	if (undoHistoryIndex <= 0)
+	{
+		return;
+	}
+
+	applyingUndoRedo = true;
+	if (applyUndoSnapshot(undoHistory[undoHistoryIndex - 1], room, renderer))
+	{
+		undoHistoryIndex--;
+		doorActionHasError = false;
+		doorActionMessage = "Undo";
+	}
+	applyingUndoRedo = false;
+}
+
+void LevelEditor::redo(Room &room, gl2d::Renderer2D &renderer)
+{
+	if (undoHistoryIndex + 1 >= static_cast<int>(undoHistory.size()))
+	{
+		return;
+	}
+
+	applyingUndoRedo = true;
+	if (applyUndoSnapshot(undoHistory[undoHistoryIndex + 1], room, renderer))
+	{
+		undoHistoryIndex++;
+		doorActionHasError = false;
+		doorActionMessage = "Redo";
+	}
+	applyingUndoRedo = false;
 }
 
 void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
@@ -2134,10 +2852,13 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearZiplineSelection();
 		doorActionMessage.clear();
 		doorActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeleteZiplineIndex = -1;
+		pendingOpenDeleteZiplinePopup = false;
 		pendingDoorDeletes.clear();
 		levelDirty = false;
 	}
@@ -2304,6 +3025,8 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 					fileActionHasError = true;
 					fileActionMessage = "Renamed level, but couldn't update world references: " + worldResult.message;
 				}
+
+				pushUndoSnapshot(room);
 			}
 		}
 		if (!canRenameSelected) { ImGui::EndDisabled(); }

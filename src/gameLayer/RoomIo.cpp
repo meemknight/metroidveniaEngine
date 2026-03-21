@@ -74,7 +74,7 @@ namespace
 		return text;
 	}
 
-	bool validateRoomDoors(Room const &room, std::string &errorMessage)
+	bool validateRoomContent(Room const &room, std::string &errorMessage)
 	{
 		std::unordered_set<std::string> usedNames;
 
@@ -105,6 +105,19 @@ namespace
 			{
 				errorMessage = "Door player spawn positions must stay inside the room";
 				return false;
+			}
+		}
+
+		for (Zipline const &zipline : room.ziplines)
+		{
+			for (glm::ivec2 const &point : zipline.points)
+			{
+				if (point.x < 0 || point.y < 0 ||
+					point.x >= room.size.x || point.y >= room.size.y)
+				{
+					errorMessage = "Zipline points must stay inside the room";
+					return false;
+				}
 			}
 		}
 
@@ -196,10 +209,11 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 			{"width", room.size.x},
 			{"height", room.size.y},
 			{"blocks", nlohmann::json::array()},
-			{"doors", nlohmann::json::array()}
+			{"doors", nlohmann::json::array()},
+			{"ziplines", nlohmann::json::array()}
 		};
 
-		if (!validateRoomDoors(room, result.message))
+		if (!validateRoomContent(room, result.message))
 		{
 			return result;
 		}
@@ -219,6 +233,16 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 				{"height", door.size.y},
 				{"playerSpawnX", door.playerSpawnPosition.x},
 				{"playerSpawnY", door.playerSpawnPosition.y}
+			});
+		}
+
+		for (Zipline const &zipline : room.ziplines)
+		{
+			data["ziplines"].push_back({
+				{"x1", zipline.points[0].x},
+				{"y1", zipline.points[0].y},
+				{"x2", zipline.points[1].x},
+				{"y2", zipline.points[1].y}
 			});
 		}
 
@@ -293,6 +317,7 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 		}
 
 		room.doors.clear();
+		room.ziplines.clear();
 		if (data.contains("doors"))
 		{
 			if (!data["doors"].is_array())
@@ -355,6 +380,42 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 				}
 
 				room.doors.push_back(door);
+			}
+		}
+
+		if (data.contains("ziplines"))
+		{
+			if (!data["ziplines"].is_array())
+			{
+				result.message = "Ziplines must be stored as a JSON array";
+				return result;
+			}
+
+			for (auto const &ziplineData : data["ziplines"])
+			{
+				if (!ziplineData.is_object())
+				{
+					result.message = "Zipline entries must be JSON objects";
+					return result;
+				}
+
+				Zipline zipline = {};
+				zipline.points[0] = {
+					ziplineData.value("x1", 0),
+					ziplineData.value("y1", 0)
+				};
+				zipline.points[1] = {
+					ziplineData.value("x2", zipline.points[0].x),
+					ziplineData.value("y2", zipline.points[0].y)
+				};
+
+				for (glm::ivec2 &point : zipline.points)
+				{
+					point.x = std::clamp(point.x, 0, std::max(room.size.x - 1, 0));
+					point.y = std::clamp(point.y, 0, std::max(room.size.y - 1, 0));
+				}
+
+				room.ziplines.push_back(zipline);
 			}
 		}
 

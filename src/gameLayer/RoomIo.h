@@ -23,7 +23,7 @@ struct RoomIoResult
 	std::string message = {};
 };
 
-// Loads and saves room tile and door data as simple JSON files inside resources/levels.
+// Loads and saves room tile, door, and zipline data as simple JSON files inside resources/levels.
 std::string getRoomFilesFolder();
 RoomIoResult ensureRoomFilesFolder();
 RoomFilesListing listRoomFiles();

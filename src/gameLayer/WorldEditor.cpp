@@ -12,6 +12,7 @@
 
 namespace
 {
+	constexpr int kMaxUndoSteps = 100;
 	constexpr float kMinWorldZoom = 0.1f;
 	constexpr float kMaxWorldZoom = 48.f;
 	constexpr float kPlacedLevelDoubleClickTime = 0.28f;
@@ -149,8 +150,8 @@ void WorldEditor::cleanup()
 
 void WorldEditor::enter(gl2d::Renderer2D &renderer)
 {
-	refreshAllLevelPreviews(renderer);
-	pendingPreviewRefreshLevelName.clear();
+	refreshPlacementSizesFromRooms();
+	invalidateAllLevelPreviews();
 	if (sanitizeDoorLinks())
 	{
 		worldDirty = true;
@@ -166,6 +167,8 @@ void WorldEditor::enter(gl2d::Renderer2D &renderer)
 	{
 		clampCamera(renderer);
 	}
+
+	resetUndoHistory();
 }
 
 void WorldEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer,
@@ -198,15 +201,10 @@ void WorldEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		focusWorld(renderer);
 	}
 
-	if (!pendingPreviewRefreshLevelName.empty())
-	{
-		refreshLevelPreview(pendingPreviewRefreshLevelName, renderer);
-		pendingPreviewRefreshLevelName.clear();
-	}
-
-	updateShortcuts(input, gameViewFocused);
+	updateShortcuts(input, renderer, gameViewFocused);
 	updateCamera(deltaTime, input, renderer);
 	updateDragging(input, renderer, gameViewHovered);
+	refreshClosestMissingPreview(renderer);
 
 	renderer.setCamera(camera);
 	drawWorld(renderer);
@@ -218,6 +216,171 @@ void WorldEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 	drawWindow(renderer);
 	drawLevelFilesWindow(renderer);
 	drawDiscardWindow(renderer);
+}
+
+WorldEditor::UndoSnapshot WorldEditor::captureUndoSnapshot() const
+{
+	UndoSnapshot snapshot = {};
+	snapshot.world = world;
+	snapshot.selectedLevelName = selectedLevelName;
+	snapshot.selectedPlacedLevelName = selectedPlacedLevelName;
+	snapshot.selectedPlacedLevels = selectedPlacedLevels;
+	snapshot.selectedDoor = selectedDoor;
+	snapshot.worldDirty = worldDirty;
+	return snapshot;
+}
+
+bool WorldEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &b) const
+{
+	auto worldDataMatches = [](WorldData const &lhs, WorldData const &rhs)
+	{
+		if (lhs.bounds != rhs.bounds || lhs.levels.size() != rhs.levels.size())
+		{
+			return false;
+		}
+
+		for (auto const &levelIt : lhs.levels)
+		{
+			auto rightLevel = rhs.levels.find(levelIt.first);
+			if (rightLevel == rhs.levels.end())
+			{
+				return false;
+			}
+
+			WorldLevelPlacement const &leftPlacement = levelIt.second;
+			WorldLevelPlacement const &rightPlacement = rightLevel->second;
+			if (leftPlacement.name != rightPlacement.name ||
+				leftPlacement.position != rightPlacement.position ||
+				leftPlacement.size != rightPlacement.size ||
+				leftPlacement.flags != rightPlacement.flags ||
+				leftPlacement.doorLinks.size() != rightPlacement.doorLinks.size())
+			{
+				return false;
+			}
+
+			for (auto const &linkIt : leftPlacement.doorLinks)
+			{
+				auto rightLink = rightPlacement.doorLinks.find(linkIt.first);
+				if (rightLink == rightPlacement.doorLinks.end())
+				{
+					return false;
+				}
+
+				if (linkIt.second.levelName != rightLink->second.levelName ||
+					linkIt.second.doorName != rightLink->second.doorName)
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	};
+
+	return
+		worldDataMatches(a.world, b.world) &&
+		a.selectedLevelName == b.selectedLevelName &&
+		a.selectedPlacedLevelName == b.selectedPlacedLevelName &&
+		a.selectedPlacedLevels == b.selectedPlacedLevels &&
+		doorReferencesMatch(a.selectedDoor, b.selectedDoor) &&
+		a.worldDirty == b.worldDirty;
+}
+
+void WorldEditor::resetUndoHistory()
+{
+	undoHistory.clear();
+	undoHistoryIndex = -1;
+	pushUndoSnapshot();
+}
+
+void WorldEditor::pushUndoSnapshot()
+{
+	if (applyingUndoRedo)
+	{
+		return;
+	}
+
+	UndoSnapshot snapshot = captureUndoSnapshot();
+	if (undoHistoryIndex >= 0 && undoHistoryIndex < static_cast<int>(undoHistory.size()) &&
+		undoSnapshotsMatch(undoHistory[undoHistoryIndex], snapshot))
+	{
+		return;
+	}
+
+	if (undoHistoryIndex + 1 < static_cast<int>(undoHistory.size()))
+	{
+		undoHistory.erase(undoHistory.begin() + undoHistoryIndex + 1, undoHistory.end());
+	}
+
+	undoHistory.push_back(snapshot);
+	undoHistoryIndex = static_cast<int>(undoHistory.size()) - 1;
+
+	if (static_cast<int>(undoHistory.size()) > kMaxUndoSteps)
+	{
+		undoHistory.erase(undoHistory.begin());
+		undoHistoryIndex--;
+	}
+}
+
+bool WorldEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, gl2d::Renderer2D &renderer)
+{
+	world = snapshot.world;
+	selectedLevelName = snapshot.selectedLevelName;
+	selectedPlacedLevelName = snapshot.selectedPlacedLevelName;
+	selectedPlacedLevels = snapshot.selectedPlacedLevels;
+	selectedDoor = snapshot.selectedDoor;
+	worldDirty = snapshot.worldDirty;
+
+	selectionPressActive = false;
+	selectionDragActive = false;
+	dragActive = false;
+	placementDragMoved = false;
+	dragStartPositions.clear();
+	dragAnchorLevelName.clear();
+	clearPendingDoorLink();
+
+	syncPreviewStorageToWorld();
+	refreshPlacementSizesFromRooms();
+	if (cameraInitialized)
+	{
+		clampCamera(renderer);
+	}
+
+	worldHasError = false;
+	worldMessage = {};
+	return true;
+}
+
+void WorldEditor::undo(gl2d::Renderer2D &renderer)
+{
+	if (undoHistoryIndex <= 0)
+	{
+		return;
+	}
+
+	applyingUndoRedo = true;
+	if (applyUndoSnapshot(undoHistory[undoHistoryIndex - 1], renderer))
+	{
+		undoHistoryIndex--;
+		worldMessage = "Undo";
+	}
+	applyingUndoRedo = false;
+}
+
+void WorldEditor::redo(gl2d::Renderer2D &renderer)
+{
+	if (undoHistoryIndex + 1 >= static_cast<int>(undoHistory.size()))
+	{
+		return;
+	}
+
+	applyingUndoRedo = true;
+	if (applyUndoSnapshot(undoHistory[undoHistoryIndex + 1], renderer))
+	{
+		undoHistoryIndex++;
+		worldMessage = "Redo";
+	}
+	applyingUndoRedo = false;
 }
 
 glm::vec2 WorldEditor::getViewSize(gl2d::Renderer2D &renderer)
@@ -453,7 +616,7 @@ void WorldEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	clampCamera(renderer);
 }
 
-void WorldEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
+void WorldEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewFocused)
 {
 	if (input.isButtonPressed(platform::Button::Escape))
 	{
@@ -467,22 +630,62 @@ void WorldEditor::updateShortcuts(platform::Input &input, bool gameViewFocused)
 
 #if REMOVE_IMGUI == 0
 	bool allowTabShortcut = !worldEditorModalPopupOpen();
+	bool allowUndoRedoShortcut = !worldEditorModalPopupOpen();
 	if (allowTabShortcut)
 	{
 		ImGuiIO &io = ImGui::GetIO();
 		allowTabShortcut = gameViewFocused || (!io.WantTextInput && !ImGui::IsAnyItemActive());
+		allowUndoRedoShortcut = allowTabShortcut;
 	}
 
 	if (allowTabShortcut && input.isButtonPressed(platform::Button::Tab))
 	{
 		requestLoadedLevelEditorMode = true;
 	}
+
+	bool undoShortcut =
+		allowUndoRedoShortcut &&
+		input.isButtonHeld(platform::Button::LeftCtrl) &&
+		input.isButtonPressed(platform::Button::Z) &&
+		!input.isButtonHeld(platform::Button::LeftShift);
+	bool redoShortcut =
+		allowUndoRedoShortcut &&
+		(
+			(input.isButtonHeld(platform::Button::LeftCtrl) &&
+			 input.isButtonPressed(platform::Button::Y)) ||
+			(input.isButtonHeld(platform::Button::LeftCtrl) &&
+			 input.isButtonHeld(platform::Button::LeftShift) &&
+			 input.isButtonPressed(platform::Button::Z))
+		);
 #else
 	if (input.isButtonPressed(platform::Button::Tab))
 	{
 		requestLoadedLevelEditorMode = true;
 	}
+
+	bool undoShortcut =
+		input.isButtonHeld(platform::Button::LeftCtrl) &&
+		input.isButtonPressed(platform::Button::Z) &&
+		!input.isButtonHeld(platform::Button::LeftShift);
+	bool redoShortcut =
+		(input.isButtonHeld(platform::Button::LeftCtrl) &&
+		 input.isButtonPressed(platform::Button::Y)) ||
+		(input.isButtonHeld(platform::Button::LeftCtrl) &&
+		 input.isButtonHeld(platform::Button::LeftShift) &&
+		 input.isButtonPressed(platform::Button::Z));
 #endif
+
+	if (undoShortcut)
+	{
+		undo(renderer);
+		return;
+	}
+
+	if (redoShortcut)
+	{
+		redo(renderer);
+		return;
+	}
 
 	bool saveShortcut =
 		input.isButtonHeld(platform::Button::LeftCtrl) &&
@@ -569,7 +772,12 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 	{
 		if (!input.isLMouseHeld() || !input.isButtonHeld(platform::Button::LeftCtrl))
 		{
+			if (placementDragMoved)
+			{
+				pushUndoSnapshot();
+			}
 			dragActive = false;
+			placementDragMoved = false;
 			dragStartPositions.clear();
 			dragAnchorLevelName.clear();
 			return;
@@ -579,6 +787,7 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 		if (anchorStart == dragStartPositions.end())
 		{
 			dragActive = false;
+			placementDragMoved = false;
 			dragStartPositions.clear();
 			dragAnchorLevelName.clear();
 			return;
@@ -608,6 +817,7 @@ void WorldEditor::updateDragging(platform::Input &input, gl2d::Renderer2D &rende
 		if (movedAny)
 		{
 			worldDirty = true;
+			placementDragMoved = true;
 		}
 		return;
 	}
@@ -976,6 +1186,7 @@ void WorldEditor::linkDoors(DoorReference const &sourceDoor, DoorReference const
 	worldDirty = true;
 	worldHasError = false;
 	worldMessage = "Linked doors";
+	pushUndoSnapshot();
 }
 
 bool WorldEditor::sanitizeDoorLinks()
@@ -1082,6 +1293,7 @@ void WorldEditor::loadWorld()
 	selectionPressActive = false;
 	selectionDragActive = false;
 	dragActive = false;
+	placementDragMoved = false;
 	dragStartPositions.clear();
 	dragAnchorLevelName.clear();
 	refreshPlacementSizesFromRooms();
@@ -1092,6 +1304,8 @@ void WorldEditor::loadWorld()
 	}
 
 	syncPreviewStorageToWorld();
+	invalidateAllLevelPreviews();
+	resetUndoHistory();
 }
 
 void WorldEditor::saveWorld()
@@ -1108,6 +1322,7 @@ void WorldEditor::saveWorld()
 		{
 			worldMessage = "Saved world and cleaned invalid door links";
 		}
+		pushUndoSnapshot();
 	}
 }
 
@@ -1138,6 +1353,40 @@ void WorldEditor::cleanupAllPreviews()
 	levelPreviews.clear();
 }
 
+void WorldEditor::invalidateLevelPreview(std::string const &levelName)
+{
+	auto placement = world.levels.find(levelName);
+	if (placement == world.levels.end())
+	{
+		cleanupPreview(levelName);
+		previewRefreshFailedLevels.erase(levelName);
+		return;
+	}
+
+	Room room = {};
+	RoomIoResult result = loadRoomFromFile(room, levelName.c_str());
+	if (!result.success)
+	{
+		cleanupPreview(levelName);
+		previewRefreshFailedLevels.insert(levelName);
+		return;
+	}
+
+	LevelPreview &preview = levelPreviews[levelName];
+	preview.frameBuffer.cleanup();
+	preview.doors = room.doors;
+	placement->second.size = room.size;
+	previewRefreshFailedLevels.erase(levelName);
+}
+
+void WorldEditor::invalidateAllLevelPreviews()
+{
+	for (auto &it : levelPreviews)
+	{
+		it.second.frameBuffer.cleanup();
+	}
+}
+
 void WorldEditor::syncPreviewStorageToWorld()
 {
 	for (auto it = levelPreviews.begin(); it != levelPreviews.end(); )
@@ -1151,11 +1400,22 @@ void WorldEditor::syncPreviewStorageToWorld()
 		it->second.frameBuffer.cleanup();
 		it = levelPreviews.erase(it);
 	}
+
+	for (auto it = previewRefreshFailedLevels.begin(); it != previewRefreshFailedLevels.end(); )
+	{
+		if (world.levels.find(*it) != world.levels.end())
+		{
+			++it;
+			continue;
+		}
+
+		it = previewRefreshFailedLevels.erase(it);
+	}
 }
 
 void WorldEditor::refreshPlacementSizesFromRooms()
 {
-	// World data stores placement and links only. Room size always comes from the level file.
+	// World data stores placement and links only. Room size and door metadata come from the level file.
 	for (auto &it : world.levels)
 	{
 		Room room = {};
@@ -1163,9 +1423,13 @@ void WorldEditor::refreshPlacementSizesFromRooms()
 		if (result.success)
 		{
 			it.second.size = room.size;
+			levelPreviews[it.first].doors = room.doors;
+			previewRefreshFailedLevels.erase(it.first);
 			continue;
 		}
 
+		cleanupPreview(it.first);
+		previewRefreshFailedLevels.insert(it.first);
 		if (it.second.size.x <= 0 || it.second.size.y <= 0)
 		{
 			it.second.size = {1, 1};
@@ -1178,6 +1442,7 @@ void WorldEditor::refreshLevelPreview(std::string const &levelName, gl2d::Render
 	if (world.levels.find(levelName) == world.levels.end())
 	{
 		cleanupPreview(levelName);
+		previewRefreshFailedLevels.erase(levelName);
 		return;
 	}
 
@@ -1186,6 +1451,7 @@ void WorldEditor::refreshLevelPreview(std::string const &levelName, gl2d::Render
 	if (!result.success)
 	{
 		cleanupPreview(levelName);
+		previewRefreshFailedLevels.insert(levelName);
 		return;
 	}
 
@@ -1194,6 +1460,7 @@ void WorldEditor::refreshLevelPreview(std::string const &levelName, gl2d::Render
 	preview.frameBuffer.create(std::max(room.size.x, 1), std::max(room.size.y, 1), true);
 	preview.doors = room.doors;
 	world.levels[levelName].size = room.size;
+	previewRefreshFailedLevels.erase(levelName);
 
 	gl2d::Camera oldCamera = renderer.currentCamera;
 	auto oldBlendMode = renderer.getBlendMode();
@@ -1228,14 +1495,70 @@ void WorldEditor::refreshLevelPreview(std::string const &levelName, gl2d::Render
 	renderer.clearDrawData();
 }
 
-void WorldEditor::refreshAllLevelPreviews(gl2d::Renderer2D &renderer)
+bool WorldEditor::refreshClosestMissingPreview(gl2d::Renderer2D &renderer)
 {
+	struct PendingPreview
+	{
+		float distanceSquared = 0.f;
+		std::string levelName = {};
+	};
+
 	syncPreviewStorageToWorld();
+
+	glm::vec2 viewCenter = getViewCenter(renderer);
+	std::vector<PendingPreview> pendingPreviews = {};
+	pendingPreviews.reserve(world.levels.size());
 
 	for (auto const &name : getSortedPlacedLevelNames(world))
 	{
-		refreshLevelPreview(name, renderer);
+		if (previewRefreshFailedLevels.find(name) != previewRefreshFailedLevels.end())
+		{
+			continue;
+		}
+
+		auto preview = levelPreviews.find(name);
+		if (preview != levelPreviews.end() && preview->second.frameBuffer.texture.isValid())
+		{
+			continue;
+		}
+
+		auto placement = world.levels.find(name);
+		if (placement == world.levels.end())
+		{
+			continue;
+		}
+
+		glm::vec2 placementCenter = {
+			placement->second.position.x + placement->second.size.x * 0.5f,
+			placement->second.position.y + placement->second.size.y * 0.5f,
+		};
+		glm::vec2 delta = placementCenter - viewCenter;
+
+		pendingPreviews.push_back({
+			delta.x * delta.x + delta.y * delta.y,
+			name,
+		});
 	}
+
+	if (pendingPreviews.empty())
+	{
+		return false;
+	}
+
+	std::sort(pendingPreviews.begin(), pendingPreviews.end(),
+		[](PendingPreview const &a, PendingPreview const &b)
+	{
+		if (a.distanceSquared != b.distanceSquared)
+		{
+			return a.distanceSquared < b.distanceSquared;
+		}
+
+		return a.levelName < b.levelName;
+	});
+
+	// Build only one missing preview each frame so entering the world editor stays responsive.
+	refreshLevelPreview(pendingPreviews.front().levelName, renderer);
+	return true;
 }
 
 void WorldEditor::spawnSelectedLevel(gl2d::Renderer2D &renderer)
@@ -1276,7 +1599,8 @@ void WorldEditor::spawnSelectedLevel(gl2d::Renderer2D &renderer)
 	worldDirty = true;
 	worldHasError = false;
 	worldMessage = "Spawned level into world";
-	pendingPreviewRefreshLevelName = placement.name;
+	invalidateLevelPreview(placement.name);
+	pushUndoSnapshot();
 }
 
 void WorldEditor::duplicateSelectedLevel()
@@ -1328,7 +1652,8 @@ void WorldEditor::duplicateSelectedLevel()
 	worldDirty = true;
 	worldHasError = false;
 	worldMessage = "Duplicated level";
-	pendingPreviewRefreshLevelName = placement.name;
+	invalidateLevelPreview(placement.name);
+	pushUndoSnapshot();
 }
 
 std::string WorldEditor::getPlacedLevelAt(glm::vec2 worldPoint)
@@ -1695,6 +2020,7 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
 		ImGui::TextUnformatted("` toggles back to gameplay");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
+		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
 		ImGui::TextUnformatted("Tab returns to the previously loaded level");
 		ImGui::TextUnformatted("Click a level or door to select it");
 		ImGui::TextUnformatted("Drag empty space to box-select levels");
@@ -1785,6 +2111,7 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 				unlinkDoor(selectedDoor);
 				worldHasError = false;
 				worldMessage = "Unlinked door";
+				pushUndoSnapshot();
 			}
 			if (!canUnlink) { ImGui::EndDisabled(); }
 		}

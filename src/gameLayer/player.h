@@ -25,6 +25,20 @@ struct Player
 	float dashCooldownTimer = 0.f;
 	float dashStartX = 0.f;
 	float dashPreviousOffset = 0.f;
+	bool glideActive = false;
+	float glideTimer = 0.f;
+	bool ziplineActive = false;
+	int ziplineIndex = -1;
+	float ziplineDistance = 0.f;
+	float ziplineSpeed = 0.f;
+	float ziplineDetachTimer = 0.f;
+	bool wallClimbActive = false;
+	int wallClimbSide = 0;
+	float wallClimbTimer = 0.f;
+	float wallClimbDuration = 0.f;
+	glm::vec2 wallClimbStart = {};
+	glm::vec2 wallClimbCorner = {};
+	glm::vec2 wallClimbEnd = {};
 
 	glm::vec2 getCenter() const
 	{

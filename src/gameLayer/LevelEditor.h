@@ -19,6 +19,7 @@ struct LevelEditor
 		measureTool,
 		doorTool,
 		moveTool,
+		ziplineTool,
 	};
 
 	struct EditorTuning
@@ -41,6 +42,23 @@ struct LevelEditor
 	{
 		std::string oldName = {};
 		std::string newName = {};
+	};
+
+	struct UndoSnapshot
+	{
+		Room room = {};
+		std::string currentLevelName = {};
+		std::string selectedLevelName = {};
+		std::string renameName = {};
+		int selectedDoorIndex = -1;
+		std::string selectedDoorName = {};
+		int selectedZiplineIndex = -1;
+		int selectedZiplinePoint = -1;
+		glm::ivec2 pendingRoomSize = {};
+		glm::ivec2 newLevelSize = {};
+		bool levelDirty = false;
+		std::vector<PendingDoorRename> pendingDoorRenames = {};
+		std::vector<std::string> pendingDoorDeletes = {};
 	};
 
 	// The move tool keeps a detached snapshot of solid blocks and only writes it back on Enter.
@@ -70,7 +88,7 @@ struct LevelEditor
 	void focusRoom(Room &room, gl2d::Renderer2D &renderer);
 	void updateHoveredTile(platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
 	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
-	void updateShortcuts(platform::Input &input, Room &room, bool gameViewFocused);
+	void updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewFocused);
 	void updateTools(platform::Input &input, Room &room, bool gameViewHovered);
 	void setBlock(Room &room, int x, int y, bool solid);
 	void fillRect(Room &room, glm::ivec2 a, glm::ivec2 b, bool solid);
@@ -83,6 +101,7 @@ struct LevelEditor
 	bool moveSelectionPreviewContainsTile(glm::ivec2 tile) const;
 	void commitMoveSelection(Room &room);
 	void clearDoorSelection();
+	void clearZiplineSelection();
 	int getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld);
 	int getHoveredDoorSpawnIndex(Room &room, glm::vec2 mouseWorld);
 	bool hoveredSelectedDoorResizeHandle(Room &room, glm::vec2 mouseWorld);
@@ -96,12 +115,19 @@ struct LevelEditor
 	void syncSelectedDoorBuffer(Room &room);
 	void applySelectedDoorName(Room &room);
 	void moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position);
+	bool getHoveredZiplinePoint(Room &room, glm::vec2 mouseWorld, int &ziplineIndex, int &pointIndex);
+	void createZipline(Room &room, glm::ivec2 firstPoint, glm::ivec2 secondPoint);
+	void moveSelectedZiplinePoint(Room &room, glm::ivec2 position);
+	void requestDeleteSelectedZipline(Room &room);
+	void deleteSelectedZipline(Room &room);
+	void clampZiplineToRoom(Zipline &zipline, Room const &room);
 	void clampDoorToRoom(Door &door, Room const &room);
 	void clampCamera(Room &room, gl2d::Renderer2D &renderer);
 	void drawRoom(Room &room, gl2d::Renderer2D &renderer);
 	void drawGrid(Room &room, gl2d::Renderer2D &renderer);
 	void drawMoveSelection(gl2d::Renderer2D &renderer);
 	void drawDoors(Room &room, gl2d::Renderer2D &renderer);
+	void drawZiplines(Room &room, gl2d::Renderer2D &renderer);
 	void drawHoveredTile(gl2d::Renderer2D &renderer);
 	void drawRectPreview(gl2d::Renderer2D &renderer);
 	void drawMeasureText(gl2d::Renderer2D &renderer);
@@ -112,6 +138,13 @@ struct LevelEditor
 	void loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer);
 	void reloadCurrentLevel(Room &room, gl2d::Renderer2D &renderer);
 	void createNewLevel(Room &room, gl2d::Renderer2D &renderer);
+	UndoSnapshot captureUndoSnapshot(Room &room) const;
+	bool undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &b) const;
+	void resetUndoHistory(Room &room);
+	void pushUndoSnapshot(Room &room);
+	bool applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl2d::Renderer2D &renderer);
+	void undo(Room &room, gl2d::Renderer2D &renderer);
+	void redo(Room &room, gl2d::Renderer2D &renderer);
 
 	gl2d::Camera camera = {};
 	gl2d::Font measureFont = {};
@@ -133,6 +166,12 @@ struct LevelEditor
 	bool doorResizeActive = false;
 	bool doorSpawnDragActive = false;
 	glm::ivec2 doorDragGrabOffset = {};
+	int selectedZiplineIndex = -1;
+	int selectedZiplinePoint = -1;
+	bool ziplineCreateDragActive = false;
+	bool ziplinePointDragActive = false;
+	glm::ivec2 ziplineCreateStart = {};
+	glm::ivec2 ziplineCreateEnd = {};
 
 	glm::ivec2 pendingRoomSize = {};
 	glm::ivec2 pendingResizeConfirmSize = {};
@@ -154,10 +193,16 @@ struct LevelEditor
 	char renameName[128] = {};
 	char selectedDoorName[128] = {};
 	std::string pendingDeleteDoorName = {};
+	int pendingDeleteZiplineIndex = -1;
 	glm::ivec2 newLevelSize = {40, 24};
 	std::string doorActionMessage = {};
 	bool doorActionHasError = false;
 	bool pendingOpenDeleteDoorPopup = false;
+	bool pendingOpenDeleteZiplinePopup = false;
 	std::vector<PendingDoorRename> pendingDoorRenames = {};
 	std::vector<std::string> pendingDoorDeletes = {};
+	std::vector<UndoSnapshot> undoHistory = {};
+	int undoHistoryIndex = -1;
+	bool brushPaintActive = false;
+	bool applyingUndoRedo = false;
 };

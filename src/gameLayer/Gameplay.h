@@ -22,6 +22,8 @@ struct Gameplay
 		float dashCooldownTime = 0.18f; // Delay after a dash before another one can start.
 		float jumpHeight = 11.f; // Ground jump height in tiles.
 		float jumpRiseGravityMultiplier = 1.6f; // Upward gravity multiplier. Higher = snappier jump rise at the same height. (jump snappiness)
+		float glideFallSpeed = 5.f; // Target falling speed while glide is fully active.
+		float glideEnterTime = 0.09f; // Small delay for easing from normal fall into the glide fall speed.
 		float wallJumpDetachDistance = 0.55f; // Instant shove away from the wall on wall jump.
 		float wallJumpPushSpeed = 22.f; // Extra sideways carry added after the wall jump starts.
 		float wallJumpCarryDrag = 56.f; // How fast that wall-jump sideways carry fades back to 0.
@@ -29,6 +31,7 @@ struct Gameplay
 		float maxFallSpeed = 38.f; // Fastest normal falling speed.
 		float wallSlideGravity = 18.f; // Downward acceleration while holding a wall.
 		float wallSlideSpeed = 8.f; // Top falling speed while wall sliding.
+		float wallClimbDuration = 0.18f; // Base time for a full ledge climb from the wall onto the top.
 		float jumpCutMultiplier = 0.60f; // Upward speed kept when jump is released early.
 		float coyoteTime = 0.08f; // Ground-jump grace time after leaving a ledge.
 		float jumpBufferTime = 0.10f; // Early jump press grace time before landing or grabbing.
@@ -38,7 +41,9 @@ struct Gameplay
 		float cameraZoom = 32.f; // Gameplay camera zoom.
 		bool enableDash = true; // Allows air and ground dashes.
 		bool enableSprint = true; // Allows sprint input to change move speed.
+		bool enableGlide = true; // Allows a second jump press while falling to slow the descent.
 		bool enableWallGrab = true; // Allows wall grabbing, sliding, and wall jumps.
+		bool enableWallClimb = true; // Allows automatic ledge climbs when airborne and pressing into a wall.
 		bool showGrid = true; // Draw the gameplay tile grid.
 		float gridAlpha = 0.20f; // Grid line opacity.
 		float gridLineWidth = 0.05f; // Grid line thickness in world units.
@@ -62,7 +67,12 @@ struct Gameplay
 	void startDash(int direction);
 	bool updateDash(float deltaTime);
 	void refreshDashAvailability();
-	void updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpHeld, bool dashPressed, bool sprintHeld);
+	bool tryStartZiplineRide();
+	bool updateZiplineRide(float deltaTime, bool jumpPressed, bool downPressed, float jumpSpeed);
+	void startWallClimb(int wallSide, glm::vec2 cornerCenter, glm::vec2 endCenter);
+	bool tryStartWallClimb(float moveInput);
+	bool updateWallClimb(float deltaTime);
+	void updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpHeld, bool downPressed, bool dashPressed, bool sprintHeld);
 	void updateRememberedWallInput(float deltaTime, float moveInput);
 	void updateWallGrabState(float moveInput);
 	void updateMeasureTool(platform::Input &input, gl2d::Renderer2D &renderer);
