@@ -46,6 +46,7 @@ struct Gameplay
 		bool enableDoubleJump = true; // Allows one extra jump while airborne.
 		bool enableGlide = true; // Allows a second jump press while falling to slow the descent.
 		bool enableWallGrab = true; // Allows wall grabbing, sliding, and wall jumps.
+		bool enableWallHold = true; // Lets pushing into a grabbed wall freeze the slide in place.
 		bool enableWallClimb = true; // Allows automatic ledge climbs when airborne and pressing into a wall.
 		bool showGrid = true; // Draw the gameplay tile grid.
 		float gridAlpha = 0.20f; // Grid line opacity.

@@ -18,6 +18,11 @@ struct Player
 	float wallRegrabTimer = 0.f;
 	float wallGrabLockTimer = 0.f;
 	float wallGrabHoldTimer = 0.f;
+	// Small grace window after releasing a grab so a quick opposite-direction
+	// input followed by jump can still wall jump cleanly.
+	int wallJumpGraceSide = 0;
+	float wallJumpGraceTimer = 0.f;
+	bool wallHoldActive = false;
 	float wallJumpCarryVelocity = 0.f;
 	int lastMoveDirection = 1;
 	bool dashActive = false;
