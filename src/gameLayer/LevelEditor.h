@@ -22,6 +22,7 @@ struct LevelEditor
 		ziplineTool,
 		spawnRegionTool,
 		spikeTool,
+		noGrabTool,
 	};
 
 	struct EditorTuning
@@ -91,7 +92,7 @@ struct LevelEditor
 	void syncPendingRoomSize(Room &room);
 	void focusRoom(Room &room, gl2d::Renderer2D &renderer);
 	void updateHoveredTile(platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
-	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room);
+	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewHovered);
 	void updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewFocused);
 	void updateTools(platform::Input &input, Room &room, bool gameViewHovered);
 	void setBlock(Room &room, int x, int y, BlockType type);

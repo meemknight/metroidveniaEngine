@@ -286,6 +286,17 @@ static void handleSDLEvent(const SDL_Event &e)
 			platform::internal::setRightMouseState(state);
 	} break;
 
+	case SDL_EVENT_MOUSE_WHEEL:
+	{
+		float scrollY = static_cast<float>(e.wheel.y);
+		if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+		{
+			scrollY = -scrollY;
+		}
+
+		platform::internal::addMouseScrollY(scrollY);
+	} break;
+
 	case SDL_EVENT_KEY_DOWN:
 	case SDL_EVENT_KEY_UP:
 	{
@@ -404,6 +415,7 @@ static bool tickOneFrame()
 	memcpy(input.buttons, platform::getAllButtons(), sizeof(input.buttons));
 	input.mouseX = platform::getRelMousePosition().x;
 	input.mouseY = platform::getRelMousePosition().y;
+	input.mouseScrollY = platform::getMouseScrollY();
 	input.lMouse = platform::getLMouseButton();
 	input.rMouse = platform::getRMouseButton();
 	strlcpy(input.typedInput, platform::getTypedInput(), sizeof(input.typedInput));

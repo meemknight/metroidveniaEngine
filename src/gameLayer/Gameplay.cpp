@@ -150,6 +150,34 @@ namespace
 		return false;
 	}
 
+	bool roomRectHitsWallActionBlock(Room const &room, glm::vec4 rect)
+	{
+		// Wall grab and wall climb only care about blocks that explicitly allow
+		// wall actions, even though other solid blocks still collide normally.
+		int minX = std::max(static_cast<int>(std::floor(rect.x)), 0);
+		int minY = std::max(static_cast<int>(std::floor(rect.y)), 0);
+		int maxX = std::min(static_cast<int>(std::ceil(rect.x + rect.z)), room.size.x);
+		int maxY = std::min(static_cast<int>(std::ceil(rect.y + rect.w)), room.size.y);
+
+		for (int y = minY; y < maxY; y++)
+		{
+			for (int x = minX; x < maxX; x++)
+			{
+				if (!room.getBlockUnsafe(x, y).allowsWallActions())
+				{
+					continue;
+				}
+
+				if (aabbOverlaps(rect, {static_cast<float>(x), static_cast<float>(y), 1.f, 1.f}))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
 	glm::vec4 getPlayerRectAtCenter(glm::vec2 center)
 	{
 		return {
@@ -210,7 +238,7 @@ namespace
 			probe.z = kWallProbeWidth + extraDistance + 0.02f;
 		}
 
-		return roomRectHitsSolid(room, probe);
+		return roomRectHitsWallActionBlock(room, probe);
 	}
 
 	bool playerTouchesGround(Player const &player, Room const &room)
@@ -267,6 +295,18 @@ namespace
 	glm::vec2 getZiplinePointAtDistance(ZiplineSlideData const &slide, float distanceAlong)
 	{
 		return slide.uphillPoint + slide.downhillDirection * std::clamp(distanceAlong, 0.f, slide.length);
+	}
+
+	int getZiplineDashDirectionSign(ZiplineSlideData const &slide, float moveInput)
+	{
+		int moveDirection = getMoveDirection(moveInput);
+		if (moveDirection == 0)
+		{
+			return 1;
+		}
+
+		glm::vec2 intendedDirection = {static_cast<float>(moveDirection), 0.f};
+		return glm::dot(intendedDirection, slide.downhillDirection) >= 0.f ? 1 : -1;
 	}
 
 	bool findZiplineRideTarget(Player const &player, Room const &room, ZiplineRideTarget &target)
@@ -351,12 +391,12 @@ namespace
 
 			for (int y = minY; y <= maxY; y++)
 			{
-				if (!room.getBlockUnsafe(wallX, y).isSolid())
+				if (!room.getBlockUnsafe(wallX, y).allowsWallActions())
 				{
 					continue;
 				}
 
-				if (y > 0 && room.getBlockUnsafe(wallX, y - 1).isSolid())
+				if (y > 0 && room.getBlockUnsafe(wallX, y - 1).allowsWallActions())
 				{
 					continue;
 				}
@@ -1054,9 +1094,16 @@ bool Gameplay::tryStartZiplineRide()
 	player.wallJumpGraceTimer = 0.f;
 	player.lastWallGrabSide = 0;
 	player.wallJumpCarryVelocity = 0.f;
+	// Ziplines count like a fresh footing for dash recovery, even though the
+	// player still can't start a dash until they leave the ride again.
+	player.airDashAvailable = true;
 	player.glideArmedFromDoubleJump = false;
 	player.dashActive = false;
 	player.jumpQueuedAfterDash = false;
+	player.ziplineDashActive = false;
+	player.ziplineDashTimer = 0.f;
+	player.ziplineDashStartDistance = target.distanceAlong;
+	player.ziplineDashDirection = 1;
 	player.physics.transform.pos = {
 		target.linePoint.x,
 		target.linePoint.y - kPlayerHeight * 0.5f
@@ -1071,7 +1118,7 @@ bool Gameplay::tryStartZiplineRide()
 	return true;
 }
 
-bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPressed, float jumpSpeed)
+bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPressed, bool dashPressed, float moveInput, float jumpSpeed)
 {
 	if (!player.ziplineActive || player.ziplineIndex < 0 || player.ziplineIndex >= static_cast<int>(room.ziplines.size()))
 	{
@@ -1079,6 +1126,7 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 		player.ziplineIndex = -1;
 		player.ziplineDistance = 0.f;
 		player.ziplineSpeed = 0.f;
+		player.ziplineDashActive = false;
 		return false;
 	}
 
@@ -1088,6 +1136,7 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 		player.ziplineIndex = -1;
 		player.ziplineDistance = 0.f;
 		player.ziplineSpeed = 0.f;
+		player.ziplineDashActive = false;
 		player.ziplineDetachTimer = kZiplineDetachDelay;
 		return false;
 	}
@@ -1099,6 +1148,7 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 		player.ziplineIndex = -1;
 		player.ziplineDistance = 0.f;
 		player.ziplineSpeed = 0.f;
+		player.ziplineDashActive = false;
 		player.ziplineDetachTimer = kZiplineDetachDelay;
 		return false;
 	}
@@ -1109,6 +1159,8 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 		player.ziplineIndex = -1;
 		player.ziplineDistance = 0.f;
 		player.ziplineDetachTimer = kZiplineDetachDelay;
+		player.ziplineDashActive = false;
+		player.ziplineDashTimer = 0.f;
 		player.physics.transform.pos = {
 			detachPoint.x,
 			detachPoint.y - kPlayerHeight * 0.5f
@@ -1171,6 +1223,75 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 		player.physics.downTouch = false;
 		player.coyoteTimer = 0.f;
 		return false;
+	}
+
+	if (player.ziplineDashActive && (!tuning.enableDash || !tuning.enableZiplineDash))
+	{
+		player.ziplineDashActive = false;
+	}
+
+	bool canStartZiplineDash =
+		tuning.enableDash &&
+		tuning.enableZiplineDash &&
+		dashPressed &&
+		player.dashCooldownTimer <= 0.f &&
+		!player.ziplineDashActive;
+	if (canStartZiplineDash)
+	{
+		player.ziplineDashActive = true;
+		player.ziplineDashDirection = getZiplineDashDirectionSign(slide, moveInput);
+		player.ziplineDashTimer = 0.f;
+		player.ziplineDashStartDistance = player.ziplineDistance;
+		if (player.ziplineDashDirection < 0)
+		{
+			// Reversing on the rail intentionally cancels the downhill slide build-up,
+			// but downhill zipline dashes should keep the accumulated rail speed alive.
+			player.ziplineSpeed = 0.f;
+		}
+		player.dashCooldownTimer = tuning.dashCooldownTime;
+	}
+
+	if (player.ziplineDashActive)
+	{
+		// Zipline dash reuses the normal dash timing and distance, but the scripted
+		// burst is measured along the rail instead of only on the X axis.
+		float dashDuration = std::max(tuning.dashDuration, 0.001f);
+		player.ziplineDashTimer += deltaTime;
+
+		float dashProgress = easing::clamp01(player.ziplineDashTimer / dashDuration);
+		float dashOffset = easing::easeOutCubic(dashProgress) * tuning.dashDistance * player.ziplineDashDirection;
+		float desiredDistance = player.ziplineDashStartDistance + dashOffset;
+		float clampedDistance = std::clamp(desiredDistance, 0.f, slide.length);
+		glm::vec2 nextPoint = getZiplinePointAtDistance(slide, clampedDistance);
+		glm::vec2 nextCenter = {
+			nextPoint.x,
+			nextPoint.y - kPlayerHeight * 0.5f
+		};
+		glm::vec4 nextRideRect = insetRect(
+			getPlayerRectAtCenter(nextCenter),
+			kZiplineCollisionInset);
+		if (roomRectHitsSolid(room, nextRideRect))
+		{
+			detachFromZipline(currentPoint, false);
+			return false;
+		}
+
+		player.ziplineDistance = clampedDistance;
+		player.physics.transform.pos = nextCenter;
+		player.physics.lastPosition = player.physics.transform.pos;
+		if (player.ziplineDashDirection < 0)
+		{
+			player.ziplineSpeed = 0.f;
+		}
+
+		if (dashProgress >= 1.f ||
+			clampedDistance <= 0.f ||
+			clampedDistance >= slide.length)
+		{
+			player.ziplineDashActive = false;
+		}
+
+		return true;
 	}
 
 	float downhillAcceleration = tuning.gravity * std::max(slide.downhillDirection.y, 0.f);
@@ -1445,7 +1566,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 
 	if (player.ziplineActive)
 	{
-		if (updateZiplineRide(deltaTime, jumpPressed, downPressed, jumpSpeed))
+		if (updateZiplineRide(deltaTime, jumpPressed, downPressed, dashPressed, moveInput, jumpSpeed))
 		{
 			return;
 		}
@@ -1831,6 +1952,7 @@ void Gameplay::drawRoom(gl2d::Renderer2D &renderer)
 	const gl2d::Color4f roomBackground = {0.10f, 0.11f, 0.15f, 1.f};
 	const gl2d::Color4f solidBlockColor = {0.23f, 0.26f, 0.32f, 1.f};
 	const gl2d::Color4f spikeBlockColor = {0.86f, 0.18f, 0.20f, 1.f};
+	const gl2d::Color4f noGrabBlockColor = {0.56f, 0.47f, 0.22f, 1.f};
 	const gl2d::Color4f ziplineLineColor = {0.76f, 0.78f, 0.80f, 0.82f};
 	const gl2d::Color4f ziplinePointColor = {0.94f, 0.84f, 0.28f, 0.92f};
 	constexpr float ziplineLineWidth = 0.05f;
@@ -1850,7 +1972,11 @@ void Gameplay::drawRoom(gl2d::Renderer2D &renderer)
 
 			renderer.renderRectangle(
 				{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
-				block.isSolid() ? solidBlockColor : spikeBlockColor);
+				block.type == solidBlock
+					? solidBlockColor
+					: block.type == noGrabBlock
+						? noGrabBlockColor
+						: spikeBlockColor);
 		}
 	}
 
@@ -2002,6 +2128,7 @@ void Gameplay::drawDebugWindow()
 		ImGui::TextUnformatted("` toggles between gameplay and the last editor mode");
 		ImGui::TextUnformatted("Shift presses dash, holding Shift keeps sprint on");
 		ImGui::TextUnformatted("Controller: LStick/DPad move, A jumps, RT dashes");
+		ImGui::TextUnformatted("Zipline dash follows the rail and can reverse with left / right");
 		ImGui::TextUnformatted("Jump again in air to double jump, then hold to glide");
 		ImGui::TextUnformatted("Wall grab latches once started, Down drops it");
 		ImGui::TextUnformatted("Hold toward the wall to freeze a wall slide in place");
@@ -2027,6 +2154,7 @@ void Gameplay::drawDebugWindow()
 		ImGui::Separator();
 		ImGui::TextUnformatted("Player");
 		ImGui::Checkbox("Enable Dash", &tuning.enableDash);
+		ImGui::Checkbox("Enable Zipline Dash", &tuning.enableZiplineDash);
 		ImGui::Checkbox("Enable Sprint", &tuning.enableSprint);
 		ImGui::Checkbox("Enable Double Jump", &tuning.enableDoubleJump);
 		ImGui::Checkbox("Enable Glide", &tuning.enableGlide);
@@ -2102,8 +2230,9 @@ void Gameplay::drawDebugWindow()
 		ImGui::Text("Double Jump: available %d  glide arm %d",
 			player.doubleJumpAvailable ? 1 : 0,
 			player.glideArmedFromDoubleJump ? 1 : 0);
-		ImGui::Text("Zipline: active %d  speed %.2f  detach %.2f",
+		ImGui::Text("Zipline: active %d  dash %d  speed %.2f  detach %.2f",
 			player.ziplineActive ? 1 : 0,
+			player.ziplineDashActive ? 1 : 0,
 			player.ziplineSpeed,
 			player.ziplineDetachTimer);
 		ImGui::Text("Dash: active %d  air %d  cooldown %.2f",

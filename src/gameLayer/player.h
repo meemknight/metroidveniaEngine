@@ -40,6 +40,12 @@ struct Player
 	float ziplineDistance = 0.f;
 	float ziplineSpeed = 0.f;
 	float ziplineDetachTimer = 0.f;
+	// Zipline dash is a short scripted burst that follows the rail direction
+	// instead of the normal horizontal dash path.
+	bool ziplineDashActive = false;
+	int ziplineDashDirection = 1;
+	float ziplineDashTimer = 0.f;
+	float ziplineDashStartDistance = 0.f;
 	bool wallClimbActive = false;
 	int wallClimbSide = 0;
 	float wallClimbTimer = 0.f;

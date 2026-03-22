@@ -10,6 +10,7 @@ platform::Button rightMouse;
 platform::Controller controller = {};
 platform::Controller controllers[4] = {};
 std::string typedInput;
+float mouseScrollY = 0.f;
 
 platform::Button *platform::getAllButtons()
 {
@@ -100,6 +101,11 @@ platform::Controller platform::getControllerButtonsAtIndex(int i)
 std::string platform::getTypedInput()
 {
 	return typedInput;
+}
+
+float platform::getMouseScrollY()
+{
+	return mouseScrollY;
 }
 
 bool platform::isControllerConnected(int i)
@@ -202,7 +208,7 @@ bool platform::setControllerRumble(int i, float lowVibration, float highVibratio
 	SDL_Gamepad *pad = SDL_OpenGamepad(id);
 	if (!pad) return false;
 
-	// If your loop isn’t polling events, you can uncomment:
+	// If your loop isnï¿½t polling events, you can uncomment:
 	// SDL_UpdateJoysticks();  // helps keep rumble state updated
 
 	const bool ok = SDL_RumbleGamepad(pad, ToU16(lowVibration), ToU16(highVibration), ms);
@@ -395,12 +401,14 @@ void platform::internal::updateAllButtons(float deltaTime)
 	updateButton(rightMouse, deltaTime);
 	
 	UpdateControllersSDL3(deltaTime);
+	resetMouseScroll();
 
 }
 
 void platform::internal::resetInputsToZero()
 {
 	resetTypedInput();
+	resetMouseScroll();
 
 	for (int i = 0; i < platform::Button::BUTTONS_COUNT; i++)
 	{
@@ -422,4 +430,14 @@ void platform::internal::addToTypedInput(char c)
 void platform::internal::resetTypedInput()
 {
 	typedInput.clear();
+}
+
+void platform::internal::addMouseScrollY(float amount)
+{
+	mouseScrollY += amount;
+}
+
+void platform::internal::resetMouseScroll()
+{
+	mouseScrollY = 0.f;
 }

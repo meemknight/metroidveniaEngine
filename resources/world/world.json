@@ -161,6 +161,26 @@
 			"y": -1.2303123474121094
 		},
 		{
+			"doorLinks": [],
+			"flags": 0,
+			"name": "notgrab",
+			"x": -363.0,
+			"y": 112.0
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 1",
+					"linkedDoor": "door 1",
+					"linkedLevel": "zipchallenge"
+				}
+			],
+			"flags": 0,
+			"name": "rom1",
+			"x": -465.16253662109375,
+			"y": 171.93882751464844
+		},
+		{
 			"doorLinks": [
 				{
 					"door": "door 1",
@@ -248,6 +268,19 @@
 			"name": "zipRoomTest",
 			"x": -100.89666748046875,
 			"y": 180.9219207763672
+		},
+		{
+			"doorLinks": [
+				{
+					"door": "door 1",
+					"linkedDoor": "door 1",
+					"linkedLevel": "rom1"
+				}
+			],
+			"flags": 0,
+			"name": "zipchallenge",
+			"x": -425.0,
+			"y": 189.0
 		}
 	]
 }

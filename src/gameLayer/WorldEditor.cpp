@@ -14,6 +14,7 @@
 namespace
 {
 	constexpr int kMaxUndoSteps = 100;
+	constexpr float kEditorMouseWheelZoomStep = 1.18f;
 	constexpr float kMinWorldZoom = 0.1f;
 	constexpr float kMaxWorldZoom = 48.f;
 	constexpr float kPlacedLevelDoubleClickTime = 0.28f;
@@ -58,6 +59,7 @@ namespace
 	void drawRoomPreview(Room const &room, gl2d::Renderer2D &renderer)
 	{
 		const gl2d::Color4f previewSpikeColor = {0.86f, 0.20f, 0.22f, 1.f};
+		const gl2d::Color4f previewNoGrabColor = {0.66f, 0.56f, 0.28f, 1.f};
 		const gl2d::Color4f previewZiplineLineColor = {0.86f, 0.88f, 0.92f, 0.42f};
 		const gl2d::Color4f previewZiplinePointColor = {0.94f, 0.84f, 0.28f, 0.92f};
 		constexpr float previewZiplineLineWidth = 1.0f;
@@ -79,7 +81,11 @@ namespace
 
 				renderer.renderRectangle(
 					{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
-					block.isSolid() ? kPreviewBlockColor : previewSpikeColor);
+					block.type == solidBlock
+						? kPreviewBlockColor
+						: block.type == noGrabBlock
+							? previewNoGrabColor
+							: previewSpikeColor);
 			}
 		}
 
@@ -242,7 +248,7 @@ void WorldEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 
 	updateShortcuts(input, renderer, gameViewFocused);
 	updatePendingNewLevelTyping(input, renderer);
-	updateCamera(deltaTime, input, renderer);
+	updateCamera(deltaTime, input, renderer, gameViewHovered);
 	updateDragging(input, renderer, gameViewHovered);
 	refreshClosestMissingPreview(renderer);
 
@@ -615,7 +621,7 @@ void WorldEditor::clampCamera(gl2d::Renderer2D &renderer)
 	setViewCenter(center, renderer);
 }
 
-void WorldEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer)
+void WorldEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewHovered)
 {
 	if (pendingNewLevel.active && pendingNewLevel.naming)
 	{
@@ -653,6 +659,13 @@ void WorldEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	if (input.isButtonHeld(platform::Button::E))
 	{
 		tuning.cameraZoom += 42.0f * deltaTime;
+	}
+
+	if (gameViewHovered && input.mouseScrollY != 0.f)
+	{
+		// Wheel zoom scales from the current zoom so the world view still feels
+		// controllable both when far out and when inspecting a local cluster.
+		tuning.cameraZoom *= std::pow(kEditorMouseWheelZoomStep, input.mouseScrollY);
 	}
 
 	tuning.cameraZoom = std::clamp(tuning.cameraZoom, kMinWorldZoom, kMaxWorldZoom);

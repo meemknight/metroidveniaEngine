@@ -13,6 +13,7 @@
 namespace
 {
 	constexpr int kMaxUndoSteps = 100;
+	constexpr float kEditorMouseWheelZoomStep = 1.18f;
 	const glm::ivec2 kDefaultDoorSize = {2, 3};
 	const gl2d::Color4f kDoorFillColor = {1.0f, 0.56f, 0.12f, 0.14f};
 	const gl2d::Color4f kDoorOutlineColor = {1.0f, 0.64f, 0.18f, 0.72f};
@@ -298,7 +299,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 	}
 
 	updateShortcuts(input, renderer, room, gameViewFocused);
-	updateCamera(deltaTime, input, renderer, room);
+	updateCamera(deltaTime, input, renderer, room, gameViewHovered);
 	updateHoveredTile(input, renderer, room);
 	updateTools(input, room, gameViewHovered);
 
@@ -415,7 +416,7 @@ void LevelEditor::updateHoveredTile(platform::Input &input, gl2d::Renderer2D &re
 	hoveredTileValid = room.getBlockSafe(hoveredTile.x, hoveredTile.y) != nullptr;
 }
 
-void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room)
+void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewHovered)
 {
 	float moveSpeed = tuning.cameraMoveSpeed;
 	if (input.isButtonHeld(platform::Button::LeftShift))
@@ -442,6 +443,13 @@ void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 	if (input.isButtonHeld(platform::Button::E))
 	{
 		tuning.cameraZoom += 40.f * deltaTime;
+	}
+
+	if (gameViewHovered && input.mouseScrollY != 0.f)
+	{
+		// Wheel zoom uses a small multiplicative step so it feels usable both when
+		// zoomed far in on tiles and when backing out to inspect the whole room.
+		tuning.cameraZoom *= std::pow(kEditorMouseWheelZoomStep, input.mouseScrollY);
 	}
 
 	tuning.cameraZoom = std::clamp(tuning.cameraZoom, 4.f, 128.f);
@@ -602,6 +610,7 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR0)) { tool = noGrabTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 		return;
 	}
@@ -618,6 +627,7 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::NR0)) { tool = noGrabTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 	}
 #else
@@ -684,6 +694,7 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 	if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
+	if (input.isButtonPressed(platform::Button::NR0)) { tool = noGrabTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 #endif
 }
@@ -1292,6 +1303,33 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		if (released)
 		{
 			fillRect(room, rectDragStart, rectDragEnd, rectDragPlacesSolid ? spikeBlock : emptyBlock);
+			rectDragActive = false;
+			pushUndoSnapshot(room);
+		}
+	}
+	else if (tool == noGrabTool)
+	{
+		brushPaintActive = false;
+		if ((input.isLMousePressed() || input.isRMousePressed()) && hoveredTileValid)
+		{
+			rectDragActive = true;
+			rectDragPlacesSolid = input.isLMousePressed();
+			rectDragStart = hoveredTile;
+			rectDragEnd = hoveredTile;
+		}
+
+		if (rectDragActive && hoveredTileValid)
+		{
+			rectDragEnd = hoveredTile;
+		}
+
+		bool released = false;
+		if (rectDragActive && rectDragPlacesSolid && input.isLMouseReleased()) { released = true; }
+		if (rectDragActive && !rectDragPlacesSolid && input.isRMouseReleased()) { released = true; }
+
+		if (released)
+		{
+			fillRect(room, rectDragStart, rectDragEnd, rectDragPlacesSolid ? noGrabBlock : emptyBlock);
 			rectDragActive = false;
 			pushUndoSnapshot(room);
 		}
@@ -2315,6 +2353,7 @@ void LevelEditor::drawRoom(Room &room, gl2d::Renderer2D &renderer)
 	const gl2d::Color4f roomBackground = {0.08f, 0.10f, 0.13f, 1.f};
 	const gl2d::Color4f solidBlockColor = {0.32f, 0.40f, 0.50f, 1.f};
 	const gl2d::Color4f spikeBlockColor = {0.86f, 0.18f, 0.20f, 1.f};
+	const gl2d::Color4f noGrabBlockColor = {0.62f, 0.52f, 0.25f, 1.f};
 
 	renderer.renderRectangle({0.f, 0.f, static_cast<float>(room.size.x), static_cast<float>(room.size.y)}, roomBackground);
 
@@ -2330,7 +2369,11 @@ void LevelEditor::drawRoom(Room &room, gl2d::Renderer2D &renderer)
 
 			renderer.renderRectangle(
 				{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
-				block.isSolid() ? solidBlockColor : spikeBlockColor);
+				block.type == solidBlock
+					? solidBlockColor
+					: block.type == noGrabBlock
+						? noGrabBlockColor
+						: spikeBlockColor);
 		}
 	}
 }
@@ -2653,7 +2696,9 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 				},
 				type == spikeBlock
 					? gl2d::Color4f{1.0f, 0.34f, 0.30f, 0.16f}
-					: gl2d::Color4f{0.28f, 0.82f, 1.0f, 0.14f});
+					: type == noGrabBlock
+						? gl2d::Color4f{0.96f, 0.80f, 0.34f, 0.18f}
+						: gl2d::Color4f{0.28f, 0.82f, 1.0f, 0.14f});
 		}
 	}
 
@@ -2689,7 +2734,9 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 				},
 				type == spikeBlock
 					? gl2d::Color4f{1.0f, 0.36f, 0.32f, 0.26f}
-					: gl2d::Color4f{0.22f, 1.0f, 0.72f, 0.24f});
+					: type == noGrabBlock
+						? gl2d::Color4f{0.98f, 0.84f, 0.36f, 0.28f}
+						: gl2d::Color4f{0.22f, 1.0f, 0.72f, 0.24f});
 		}
 	}
 }
@@ -2716,6 +2763,12 @@ void LevelEditor::drawRectPreview(gl2d::Renderer2D &renderer)
 			? gl2d::Color4f{1.0f, 0.30f, 0.26f, 0.95f}
 			: gl2d::Color4f{1.0f, 0.28f, 0.22f, 0.9f};
 	}
+	if (tool == noGrabTool)
+	{
+		previewColor = rectDragPlacesSolid
+			? gl2d::Color4f{0.94f, 0.80f, 0.30f, 0.95f}
+			: gl2d::Color4f{1.0f, 0.28f, 0.22f, 0.9f};
+	}
 	if (tool == moveTool)
 	{
 		previewColor = {0.28f, 0.82f, 1.0f, 0.95f};
@@ -2726,7 +2779,7 @@ void LevelEditor::drawRectPreview(gl2d::Renderer2D &renderer)
 
 void LevelEditor::drawMeasureText(gl2d::Renderer2D &renderer)
 {
-	if ((tool != measureTool && tool != rectTool && tool != moveTool && tool != spikeTool) || !rectDragActive || !measureFont.texture.isValid())
+	if ((tool != measureTool && tool != rectTool && tool != moveTool && tool != spikeTool && tool != noGrabTool) || !rectDragActive || !measureFont.texture.isValid())
 	{
 		return;
 	}
@@ -2750,6 +2803,12 @@ void LevelEditor::drawMeasureText(gl2d::Renderer2D &renderer)
 	{
 		textColor = rectDragPlacesSolid
 			? gl2d::Color4f{1.0f, 0.42f, 0.34f, 1.f}
+			: gl2d::Color4f{1.0f, 0.38f, 0.30f, 1.f};
+	}
+	else if (tool == noGrabTool)
+	{
+		textColor = rectDragPlacesSolid
+			? gl2d::Color4f{0.98f, 0.86f, 0.38f, 1.f}
 			: gl2d::Color4f{1.0f, 0.38f, 0.30f, 1.f};
 	}
 	else if (tool == moveTool)
@@ -2805,7 +2864,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
 		ImGui::TextUnformatted("Ctrl+S saves the current level");
 		ImGui::TextUnformatted("Tab returns to the world editor");
-		ImGui::TextUnformatted("Escape cancels active move, rect, spike, measure, door, spawn region, or zipline drag input");
+		ImGui::TextUnformatted("Escape cancels active move, rect, spike, no-grab, measure, door, spawn region, or zipline drag input");
 		if (!hasLoadedLevel)
 		{
 			ImGui::TextColored({1.f, 0.88f, 0.35f, 1.f}, "Load or create a level file before editing.");
@@ -2823,6 +2882,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		if (ImGui::RadioButton("Zipline (7)", tool == ziplineTool)) { tool = ziplineTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Spawn Region (8)", tool == spawnRegionTool)) { tool = spawnRegionTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Spike (9)", tool == spikeTool)) { tool = spikeTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("No Grab (0)", tool == noGrabTool)) { tool = noGrabTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 
 		if (tool == noneTool)
 		{
@@ -2839,6 +2899,10 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		else if (tool == spikeTool)
 		{
 			ImGui::TextUnformatted("Drag LMB to place spikes, drag RMB to clear");
+		}
+		else if (tool == noGrabTool)
+		{
+			ImGui::TextUnformatted("Drag LMB to place solid no-grab blocks, drag RMB to clear");
 		}
 		else if (tool == doorTool)
 		{

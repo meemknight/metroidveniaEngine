@@ -76,7 +76,7 @@ struct WorldEditor
 	glm::vec4 getSelectionRect() const;
 	void ensureBoundsForPlacement(WorldLevelPlacement const &placement);
 	void clampCamera(gl2d::Renderer2D &renderer);
-	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer);
+	void updateCamera(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewHovered);
 	void updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewFocused);
 	void updateDragging(platform::Input &input, gl2d::Renderer2D &renderer, bool gameViewHovered);
 	void loadWorld();

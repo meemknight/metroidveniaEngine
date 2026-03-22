@@ -124,6 +124,7 @@ namespace platform
 		//mouse position relative to window
 		int mouseX = 0;
 		int mouseY = 0;
+		float mouseScrollY = 0.f;
 
 		Button buttons[Button::BUTTONS_COUNT] = {};
 
@@ -175,6 +176,7 @@ namespace platform
 	Controller getControllerButtons();
 	Controller getControllerButtonsAtIndex(int i);
 	std::string getTypedInput();
+	float getMouseScrollY();
 
 	bool isControllerConnected(int i);
 
@@ -261,6 +263,8 @@ namespace platform
 
 		void addToTypedInput(char c);
 		void resetTypedInput();
+		void addMouseScrollY(float amount);
+		void resetMouseScroll();
 
 		void UpdateControllersSDL3(float deltaTime);
 

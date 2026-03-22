@@ -5007,6 +5007,18 @@
 			],
 			"spawnX": 19,
 			"spawnY": 34
+		},
+		{
+			"rects": [
+				{
+					"height": 12,
+					"width": 17,
+					"x": 22,
+					"y": 57
+				}
+			],
+			"spawnX": 30,
+			"spawnY": 68
 		}
 	],
 	"width": 68,

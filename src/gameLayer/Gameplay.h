@@ -42,6 +42,7 @@ struct Gameplay
 		float wallGrabDelayAfterGroundJump = 0.08f; // Delay before a ground jump can latch onto a wall.
 		float cameraZoom = 32.f; // Gameplay camera zoom.
 		bool enableDash = true; // Allows air and ground dashes.
+		bool enableZiplineDash = true; // Allows dashing along a zipline while riding it.
 		bool enableSprint = true; // Allows sprint input to change move speed.
 		bool enableDoubleJump = true; // Allows one extra jump while airborne.
 		bool enableGlide = true; // Allows a second jump press while falling to slow the descent.
@@ -76,7 +77,7 @@ struct Gameplay
 	bool updateDash(float deltaTime);
 	void refreshDashAvailability();
 	bool tryStartZiplineRide();
-	bool updateZiplineRide(float deltaTime, bool jumpPressed, bool downPressed, float jumpSpeed);
+	bool updateZiplineRide(float deltaTime, bool jumpPressed, bool downPressed, bool dashPressed, float moveInput, float jumpSpeed);
 	void startWallClimb(int wallSide, glm::vec2 cornerCenter, glm::vec2 endCenter);
 	bool tryStartWallClimb(float moveInput);
 	bool updateWallClimb(float deltaTime);

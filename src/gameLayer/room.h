@@ -8,12 +8,13 @@
 #include <vector>
 
 // Room blocks are saved as tiny tile values so editors and gameplay can share
-// one simple map format: 0 empty, 1 solid, 2 spike.
+// one simple map format: 0 empty, 1 solid, 2 spike, 3 solid-without-wall-grab.
 enum BlockType : unsigned char
 {
 	emptyBlock = 0,
 	solidBlock = 1,
 	spikeBlock = 2,
+	noGrabBlock = 3,
 };
 
 inline BlockType getSafeBlockTypeFromInt(int value)
@@ -22,6 +23,7 @@ inline BlockType getSafeBlockTypeFromInt(int value)
 	{
 		case solidBlock: return solidBlock;
 		case spikeBlock: return spikeBlock;
+		case noGrabBlock: return noGrabBlock;
 		default: return emptyBlock;
 	}
 }
@@ -30,9 +32,11 @@ struct Block
 {
 	BlockType type = emptyBlock;
 
-	bool isSolid() const { return type == solidBlock; }
+	bool isSolid() const { return type == solidBlock || type == noGrabBlock; }
 	bool isDanger() const { return type == spikeBlock; }
 	bool isEmpty() const { return type == emptyBlock; }
+	bool allowsWallActions() const { return type == solidBlock; }
+	bool blocksWallActions() const { return type == noGrabBlock; }
 };
 
 struct Room
