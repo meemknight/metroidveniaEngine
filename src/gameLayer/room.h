@@ -1,6 +1,7 @@
 #pragma once
 
 #include "door.h"
+#include "pogoCircle.h"
 #include "spawnRegion.h"
 #include "zipline.h"
 
@@ -57,6 +58,7 @@ struct Room
 	std::vector<Block> blocks;
 	glm::ivec2 size = {};
 	std::vector<Door> doors;
+	std::vector<PogoCircle> pogoCircles;
 	std::vector<SpawnRegion> spawnRegions;
 	std::vector<Zipline> ziplines;
 };

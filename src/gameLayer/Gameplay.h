@@ -17,17 +17,24 @@ struct Gameplay
 		float sprintMoveSpeed = 26.f; // Horizontal speed while sprint is held.
 		float moveStartEaseTime = 0.01f; // Small acceleration ease when starting to move.
 		float moveStopEaseTime = 0.02f; // Small deceleration ease when releasing movement.
+		float attackCooldownTime = 0.18f; // Delay after a slash before another attack can start.
 		float dashDistance = 10.f; // Horizontal distance covered by one dash.
 		float dashDuration = 0.18f; // How long the scripted dash movement lasts.
 		float dashCooldownTime = 0.18f; // Delay after a dash before another one can start.
+		float wallGrabDashDistance = 5.f; // Upward distance of the small wall-hang dash.
+		float wallGrabDashSpeed = 28.f; // Upward travel speed for that wall-hang dash.
 		float jumpHeight = 11.f; // Ground jump height in tiles.
 		float doubleJumpHeight = 9.f; // Air jump height for the one extra jump.
+		float pogoJumpHeight = 9.f; // Upward height of the bounce from a downward pogo slash.
 		float jumpRiseGravityMultiplier = 1.62f; // Upward gravity multiplier. Higher = snappier jump rise at the same height. (jump snappiness)
 		float glideFallSpeed = 5.f; // Target falling speed while glide is fully active.
 		float glideEnterTime = 0.09f; // Small delay for easing from normal fall into the glide fall speed.
 		float wallJumpDetachDistance = 0.55f; // Instant shove away from the wall on wall jump.
 		float wallJumpPushSpeed = 22.f; // Extra sideways carry added after the wall jump starts.
 		float wallJumpCarryDrag = 56.f; // How fast that wall-jump sideways carry fades back to 0.
+		float jumpCarryVelocityDrag = 4.f; // Drag applied to temporary horizontal physics carry from zipline jump momentum.
+		float ziplineJumpCarryMultiplier = 1.4f; // Multiplier on the horizontal carry kept when jumping off a zipline.
+		float ziplineMaxSpeed = 42.f; // Maximum downhill speed while riding a zipline.
 		float gravity = 100.f; // Normal downward acceleration.
 		float maxFallSpeed = 38.f; // Fastest normal falling speed.
 		float wallGrabHoldTime = 0.20f; // How long a fresh wall grab hangs in place before the slide starts.
@@ -73,15 +80,22 @@ struct Gameplay
 	void updateSpawnCheckpoint();
 	void updateDoorTransition();
 	bool travelThroughDoor(Door const &door);
+	glm::ivec2 getAttackDirection(float moveInput, bool upHeld, bool downHeld) const;
+	glm::vec4 getAttackRect() const;
+	void startAttack(glm::ivec2 direction, bool grounded);
+	bool tryStartPogoBounce(float pogoJumpSpeed);
+	void updateAttack(float deltaTime);
 	void startDash(int direction);
 	bool updateDash(float deltaTime);
+	void startWallGrabDash();
+	bool updateWallGrabDash(float deltaTime);
 	void refreshDashAvailability();
 	bool tryStartZiplineRide();
 	bool updateZiplineRide(float deltaTime, bool jumpPressed, bool downPressed, bool dashPressed, float moveInput, float jumpSpeed);
 	void startWallClimb(int wallSide, glm::vec2 cornerCenter, glm::vec2 endCenter);
 	bool tryStartWallClimb(float moveInput);
 	bool updateWallClimb(float deltaTime);
-	void updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpHeld, bool downPressed, bool dashPressed, bool sprintHeld);
+	void updatePlayer(float deltaTime, float moveInput, bool upHeld, bool downHeld, bool jumpPressed, bool jumpHeld, bool downPressed, bool dashPressed, bool sprintHeld, bool attackPressed);
 	void updateRememberedWallInput(float deltaTime, float moveInput);
 	void updateWallGrabState(float moveInput);
 	void updateMeasureTool(platform::Input &input, gl2d::Renderer2D &renderer);
@@ -93,6 +107,7 @@ struct Gameplay
 	void drawRoom(gl2d::Renderer2D &renderer);
 	void drawGrid(gl2d::Renderer2D &renderer);
 	void drawPlayer(gl2d::Renderer2D &renderer);
+	void drawAttack(gl2d::Renderer2D &renderer);
 	void drawMeasureOverlay(gl2d::Renderer2D &renderer);
 	void drawDebugWindow();
 	void drawLevelFilesWindow();

@@ -19,10 +19,12 @@ struct LevelEditor
 		measureTool,
 		doorTool,
 		moveTool,
+		copyTool,
 		ziplineTool,
 		spawnRegionTool,
 		spikeTool,
 		noGrabTool,
+		pogoCircleTool,
 	};
 
 	struct EditorTuning
@@ -59,6 +61,7 @@ struct LevelEditor
 		int selectedSpawnRegionRectIndex = -1;
 		int selectedZiplineIndex = -1;
 		int selectedZiplinePoint = -1;
+		int selectedPogoCircleIndex = -1;
 		glm::ivec2 pendingRoomSize = {};
 		glm::ivec2 newLevelSize = {};
 		bool levelDirty = false;
@@ -66,7 +69,8 @@ struct LevelEditor
 		std::vector<std::string> pendingDoorDeletes = {};
 	};
 
-	// The move tool keeps a detached snapshot of solid blocks and only writes it back on Enter.
+	// Move and copy both keep a detached snapshot of the selected blocks and
+	// only write it back on Enter.
 	struct MoveSelection
 	{
 		bool active = false;
@@ -104,8 +108,9 @@ struct LevelEditor
 	void createMoveSelection(Room &room, glm::ivec2 a, glm::ivec2 b);
 	bool moveSelectionContainsTile(glm::ivec2 tile) const;
 	bool moveSelectionPreviewContainsTile(glm::ivec2 tile) const;
-	void commitMoveSelection(Room &room);
+	void commitMoveSelection(Room &room, bool copyOnly);
 	void clearDoorSelection();
+	void clearPogoCircleSelection();
 	void clearSpawnRegionSelection();
 	void clearZiplineSelection();
 	int getHoveredDoorIndex(Room &room, glm::vec2 mouseWorld);
@@ -121,6 +126,13 @@ struct LevelEditor
 	void syncSelectedDoorBuffer(Room &room);
 	void applySelectedDoorName(Room &room);
 	void moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position);
+	int getHoveredPogoCircleCenterIndex(Room &room, glm::vec2 mouseWorld);
+	int getHoveredPogoCircleResizeIndex(Room &room, glm::vec2 mouseWorld);
+	void createPogoCircle(Room &room, glm::vec2 center);
+	void moveSelectedPogoCircle(Room &room, glm::vec2 center, bool snapToCellCenter);
+	void resizeSelectedPogoCircle(Room &room, glm::vec2 mouseWorld, bool snapToHalfStep);
+	void requestDeleteSelectedPogoCircle(Room &room);
+	void deleteSelectedPogoCircle(Room &room);
 	bool getHoveredSpawnRegionRect(Room &room, glm::vec2 mouseWorld, int &regionIndex, int &rectIndex);
 	int getHoveredSpawnRegionSpawnIndex(Room &room, glm::vec2 mouseWorld);
 	bool hoveredSelectedSpawnRegionResizeHandle(Room &room, glm::vec2 mouseWorld);
@@ -146,6 +158,7 @@ struct LevelEditor
 	void drawGrid(Room &room, gl2d::Renderer2D &renderer);
 	void drawMoveSelection(gl2d::Renderer2D &renderer);
 	void drawDoors(Room &room, gl2d::Renderer2D &renderer);
+	void drawPogoCircles(Room &room, gl2d::Renderer2D &renderer);
 	void drawSpawnRegions(Room &room, gl2d::Renderer2D &renderer);
 	void drawZiplines(Room &room, gl2d::Renderer2D &renderer);
 	void drawHoveredTile(gl2d::Renderer2D &renderer);
@@ -186,6 +199,10 @@ struct LevelEditor
 	bool doorResizeActive = false;
 	bool doorSpawnDragActive = false;
 	glm::ivec2 doorDragGrabOffset = {};
+	int selectedPogoCircleIndex = -1;
+	bool pogoCircleDragActive = false;
+	bool pogoCircleResizeActive = false;
+	glm::vec2 pogoCircleDragGrabOffset = {};
 	int selectedSpawnRegionIndex = -1;
 	int selectedSpawnRegionRectIndex = -1;
 	bool spawnRegionDragActive = false;
@@ -223,6 +240,7 @@ struct LevelEditor
 	char renameName[128] = {};
 	char selectedDoorName[128] = {};
 	std::string pendingDeleteDoorName = {};
+	int pendingDeletePogoCircleIndex = -1;
 	int pendingDeleteSpawnRegionIndex = -1;
 	int pendingDeleteZiplineIndex = -1;
 	glm::ivec2 newLevelSize = {40, 24};
@@ -231,6 +249,7 @@ struct LevelEditor
 	std::string spawnRegionActionMessage = {};
 	bool spawnRegionActionHasError = false;
 	bool pendingOpenDeleteDoorPopup = false;
+	bool pendingOpenDeletePogoCirclePopup = false;
 	bool pendingOpenDeleteSpawnRegionPopup = false;
 	bool pendingOpenDeleteZiplinePopup = false;
 	std::vector<PendingDoorRename> pendingDoorRenames = {};

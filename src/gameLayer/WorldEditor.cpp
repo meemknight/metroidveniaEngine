@@ -60,6 +60,8 @@ namespace
 	{
 		const gl2d::Color4f previewSpikeColor = {0.86f, 0.20f, 0.22f, 1.f};
 		const gl2d::Color4f previewNoGrabColor = {0.66f, 0.56f, 0.28f, 1.f};
+		const gl2d::Color4f previewPogoCircleColor = {0.82f, 0.42f, 1.0f, 0.55f};
+		const gl2d::Color4f previewPogoCircleDisabledColor = {0.74f, 0.48f, 0.92f, 0.28f};
 		const gl2d::Color4f previewZiplineLineColor = {0.86f, 0.88f, 0.92f, 0.42f};
 		const gl2d::Color4f previewZiplinePointColor = {0.94f, 0.84f, 0.28f, 0.92f};
 		constexpr float previewZiplineLineWidth = 1.0f;
@@ -93,6 +95,36 @@ namespace
 		{
 			renderer.renderRectangle(door.getRectF(), kPreviewDoorFillColor);
 			renderer.renderRectangleOutline(door.getRectF(), kPreviewDoorOutlineColor, 0.18f);
+		}
+
+		// The preview framebuffer is tiny, so pogo circles are rasterized as filled
+		// tile rectangles instead of using the normal circle primitive.
+		for (PogoCircle const &pogoCircle : room.pogoCircles)
+		{
+			int minX = std::max(static_cast<int>(std::floor(pogoCircle.center.x - pogoCircle.radius)), 0);
+			int minY = std::max(static_cast<int>(std::floor(pogoCircle.center.y - pogoCircle.radius)), 0);
+			int maxX = std::min(static_cast<int>(std::ceil(pogoCircle.center.x + pogoCircle.radius)), room.size.x);
+			int maxY = std::min(static_cast<int>(std::ceil(pogoCircle.center.y + pogoCircle.radius)), room.size.y);
+
+			gl2d::Color4f fillColor = pogoCircle.collisionEnabled
+				? previewPogoCircleColor
+				: previewPogoCircleDisabledColor;
+
+			for (int y = minY; y < maxY; y++)
+			{
+				for (int x = minX; x < maxX; x++)
+				{
+					glm::vec2 tileCenter = {x + 0.5f, y + 0.5f};
+					if (glm::distance(tileCenter, pogoCircle.center) > pogoCircle.radius)
+					{
+						continue;
+					}
+
+					renderer.renderRectangle(
+						{static_cast<float>(x), static_cast<float>(y), 1.f, 1.f},
+						fillColor);
+				}
+			}
 		}
 
 		// World previews should include traversal markers too, and the preview line

@@ -25,6 +25,16 @@ struct Player
 	bool wallHoldActive = false;
 	float wallJumpCarryVelocity = 0.f;
 	int lastMoveDirection = 1;
+	// Attacks are short directional slashes with their own cooldown so the
+	// gameplay code can render and test a live hitbox without an enemy system yet.
+	bool attackActive = false;
+	glm::ivec2 attackDirection = {1, 0};
+	float attackTimer = 0.f;
+	float attackCooldownTimer = 0.f;
+	bool attackStartedOnGround = false;
+	bool attackPogoConsumed = false;
+	// Pogo bounces should keep their full scripted lift even if jump is not held.
+	bool pogoBounceActive = false;
 	bool dashActive = false;
 	bool airDashAvailable = true;
 	bool jumpQueuedAfterDash = false;
@@ -33,6 +43,12 @@ struct Player
 	float dashCooldownTimer = 0.f;
 	float dashStartX = 0.f;
 	float dashPreviousOffset = 0.f;
+	// Wall-grab dash is a short upward burst that keeps the player latched to
+	// the same wall instead of kicking them away like the regular dash does.
+	bool wallGrabDashActive = false;
+	float wallGrabDashTimer = 0.f;
+	float wallGrabDashStartY = 0.f;
+	float wallGrabDashPreviousOffset = 0.f;
 	bool glideActive = false;
 	float glideTimer = 0.f;
 	bool ziplineActive = false;

@@ -20,12 +20,16 @@ namespace
 	constexpr float kMinMeasureCameraZoom = 4.f;
 	constexpr float kMaxMeasureCameraZoom = 128.f;
 	constexpr float kDashJumpCancelThreshold = 0.80f;
+	constexpr float kAttackDuration = 0.10f;
+	constexpr float kGroundAttackWallPushDistance = 0.35f;
 	constexpr float kMinWallClimbDuration = 0.05f;
 	constexpr float kWallClimbVerticalPhase = 0.55f;
 	constexpr float kWallJumpReleaseGraceTime = 0.06f;
 	constexpr float kZiplineAttachDistance = 0.45f;
 	constexpr float kZiplineDetachDelay = 0.12f;
 	constexpr float kZiplineCollisionInset = 0.5f;
+	constexpr float kPogoCircleTopSlipFactor = 0.90f;
+	constexpr float kPogoCircleTopSlipMinDistance = 0.08f;
 
 	struct WallClimbTarget
 	{
@@ -199,6 +203,119 @@ namespace
 		return rect;
 	}
 
+	glm::vec2 closestPointOnRect(glm::vec2 point, glm::vec4 rect)
+	{
+		return {
+			std::clamp(point.x, rect.x, rect.x + rect.z),
+			std::clamp(point.y, rect.y, rect.y + rect.w)
+		};
+	}
+
+	bool pogoCircleOverlapsRect(PogoCircle const &pogoCircle, glm::vec4 rect)
+	{
+		glm::vec2 closest = closestPointOnRect(pogoCircle.center, rect);
+		return glm::distance(closest, pogoCircle.center) < pogoCircle.radius;
+	}
+
+	bool pogoCircleIntersectsRect(PogoCircle const &pogoCircle, glm::vec4 rect)
+	{
+		if (!pogoCircle.collisionEnabled)
+		{
+			return false;
+		}
+
+		return pogoCircleOverlapsRect(pogoCircle, rect);
+	}
+
+	bool playerTouchesCollisionPogoCircle(Player const &player, Room const &room)
+	{
+		glm::vec4 playerRect = player.physics.transform.getAABB();
+		for (PogoCircle const &pogoCircle : room.pogoCircles)
+		{
+			if (pogoCircleIntersectsRect(pogoCircle, playerRect))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool resolvePogoCircleCollisions(Player &player, Room const &room)
+	{
+		bool touchedPogoCircle = false;
+
+		for (int iteration = 0; iteration < 4; iteration++)
+		{
+			bool resolvedAnyCircle = false;
+			glm::vec4 playerRect = player.physics.transform.getAABB();
+
+			for (PogoCircle const &pogoCircle : room.pogoCircles)
+			{
+				if (!pogoCircle.collisionEnabled)
+				{
+					continue;
+				}
+
+				glm::vec2 closest = closestPointOnRect(pogoCircle.center, playerRect);
+				glm::vec2 delta = closest - pogoCircle.center;
+				float distance = glm::length(delta);
+				if (distance >= pogoCircle.radius)
+				{
+					continue;
+				}
+
+				touchedPogoCircle = true;
+				resolvedAnyCircle = true;
+
+				if (distance <= 0.0001f)
+				{
+					delta = player.physics.transform.pos - pogoCircle.center;
+					distance = glm::length(delta);
+				}
+				if (distance <= 0.0001f)
+				{
+					delta = {0.f, -1.f};
+					distance = 1.f;
+				}
+
+				glm::vec2 normal = delta / distance;
+				float penetration = pogoCircle.radius - distance + 0.001f;
+				player.physics.transform.pos += normal * penetration;
+
+				// Only top-side circle contact gets the stronger sideways shove so the
+				// player falls off rounded tops faster instead of perching there.
+				if (normal.y < -0.65f && player.physics.transform.pos.y < pogoCircle.center.y)
+				{
+					float slipDirection = player.physics.transform.pos.x < pogoCircle.center.x ? -1.f : 1.f;
+					float slipDistance = std::max(
+						penetration * kPogoCircleTopSlipFactor,
+						kPogoCircleTopSlipMinDistance);
+					player.physics.transform.pos.x += slipDirection * slipDistance;
+				}
+
+				float intoCircleSpeed = glm::dot(player.physics.velocity, normal);
+				if (intoCircleSpeed < 0.f)
+				{
+					player.physics.velocity -= normal * intoCircleSpeed;
+				}
+
+				player.physics.downTouch = false;
+				player.physics.leftTouch = false;
+				player.physics.rightTouch = false;
+				player.physics.upTouch = false;
+				playerRect = player.physics.transform.getAABB();
+			}
+
+			if (!resolvedAnyCircle)
+			{
+				break;
+			}
+		}
+
+		return touchedPogoCircle;
+	}
+
 	bool playerRectFitsInsideRoom(Room const &room, glm::vec4 rect)
 	{
 		return
@@ -348,7 +465,9 @@ namespace
 					linePoint.y - kPlayerHeight * 0.5f
 				};
 				glm::vec4 rideRect = getPlayerRectAtCenter(rideCenter);
-				if (!playerRectFitsInsideRoom(room, rideRect) || roomRectHitsSolid(room, rideRect))
+				// Rails near the map edge should still be attachable even if the
+				// player's full body would hang a bit outside the room bounds.
+				if (roomRectHitsSolid(room, rideRect))
 				{
 					continue;
 				}
@@ -541,6 +660,16 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 
 	bool moveLeft = !measureMode && (input.isButtonHeld(platform::Button::A) || input.isButtonHeld(platform::Button::Left));
 	bool moveRight = !measureMode && (input.isButtonHeld(platform::Button::D) || input.isButtonHeld(platform::Button::Right));
+	bool upHeld = !measureMode && (
+		input.isButtonHeld(platform::Button::W) ||
+		input.isButtonHeld(platform::Button::Up) ||
+		input.controller.buttons[platform::Controller::Up].held ||
+		input.controller.LStick.y > 0.55f);
+	bool downHeld = !measureMode && (
+		input.isButtonHeld(platform::Button::S) ||
+		input.isButtonHeld(platform::Button::Down) ||
+		input.controller.buttons[platform::Controller::Down].held ||
+		input.controller.LStick.y < -0.55f);
 	bool jumpPressed = !measureMode && (
 		input.isButtonPressed(platform::Button::Space) ||
 		input.isButtonPressed(platform::Button::W) ||
@@ -555,8 +684,10 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 		input.isButtonPressed(platform::Button::S) ||
 		input.isButtonPressed(platform::Button::Down) ||
 		input.controller.buttons[platform::Controller::Down].pressed ||
-		input.controller.buttons[platform::Controller::Down].held ||
-		input.controller.LStick.y < -0.55f);
+		downHeld);
+	bool attackPressed = !measureMode && (
+		input.isButtonPressed(platform::Button::X) ||
+		input.controller.buttons[platform::Controller::X].pressed);
 	bool dashPressed = !measureMode &&
 		tuning.enableDash &&
 		(input.isButtonPressed(platform::Button::LeftShift) || input.controller.RTButton.pressed);
@@ -573,7 +704,7 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 		moveInput = controllerMoveInput;
 	}
 
-	updatePlayer(gameplayDeltaTime, moveInput, jumpPressed, jumpHeld, downPressed, dashPressed, sprintHeld);
+	updatePlayer(gameplayDeltaTime, moveInput, upHeld, downHeld, jumpPressed, jumpHeld, downPressed, dashPressed, sprintHeld, attackPressed);
 	if (!measureMode)
 	{
 		updateSpawnCheckpoint();
@@ -602,6 +733,7 @@ void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D 
 	drawRoom(renderer);
 	drawGrid(renderer);
 	drawPlayer(renderer);
+	drawAttack(renderer);
 	drawMeasureOverlay(renderer);
 	drawDebugWindow();
 	drawLevelFilesWindow();
@@ -873,6 +1005,179 @@ bool Gameplay::travelThroughDoor(Door const &door)
 	return true;
 }
 
+glm::ivec2 Gameplay::getAttackDirection(float moveInput, bool upHeld, bool downHeld) const
+{
+	if (upHeld)
+	{
+		return {0, -1};
+	}
+
+	if (downHeld)
+	{
+		return {0, 1};
+	}
+
+	int horizontalDirection = getMoveDirection(moveInput);
+	if (horizontalDirection == 0)
+	{
+		horizontalDirection = player.lastMoveDirection;
+	}
+	if (horizontalDirection == 0)
+	{
+		horizontalDirection = 1;
+	}
+
+	return {horizontalDirection, 0};
+}
+
+glm::vec4 Gameplay::getAttackRect() const
+{
+	glm::vec4 playerRect = player.physics.transform.getAABB();
+
+	if (!player.attackActive)
+	{
+		return {};
+	}
+
+	// The attack rectangles stay explicit and tile-sized so it is easy to tune
+	// and to later reuse them for enemies or breakable objects.
+	if (player.attackDirection.x != 0)
+	{
+		constexpr float attackWidth = 3.6f;
+		constexpr float attackHeight = 2.6f;
+		float rectY = playerRect.y + playerRect.w * 0.5f - attackHeight * 0.5f;
+		if (player.attackDirection.x > 0)
+		{
+			return {
+				playerRect.x + playerRect.z - 0.10f,
+				rectY,
+				attackWidth,
+				attackHeight
+			};
+		}
+
+		return {
+			playerRect.x - attackWidth + 0.10f,
+			rectY,
+			attackWidth,
+			attackHeight
+		};
+	}
+
+	if (player.attackDirection.y < 0)
+	{
+		constexpr float attackWidth = 2.8f;
+		constexpr float attackHeight = 3.6f;
+		return {
+			playerRect.x + playerRect.z * 0.5f - attackWidth * 0.5f,
+			playerRect.y - attackHeight + 0.10f,
+			attackWidth,
+			attackHeight
+		};
+	}
+
+	if (player.attackStartedOnGround)
+	{
+		constexpr float attackWidth = 2.2f;
+		constexpr float attackHeight = 1.2f;
+		return {
+			playerRect.x + playerRect.z * 0.5f - attackWidth * 0.5f,
+			playerRect.y + playerRect.w - 0.05f,
+			attackWidth,
+			attackHeight
+		};
+	}
+
+	constexpr float attackWidth = 2.8f;
+	constexpr float attackHeight = 3.6f;
+	return {
+		playerRect.x + playerRect.z * 0.5f - attackWidth * 0.5f,
+		playerRect.y + playerRect.w - 0.10f,
+		attackWidth,
+		attackHeight
+	};
+}
+
+void Gameplay::startAttack(glm::ivec2 direction, bool grounded)
+{
+	player.attackActive = true;
+	player.attackDirection = direction;
+	player.attackTimer = kAttackDuration;
+	player.attackCooldownTimer = tuning.attackCooldownTime;
+	player.attackStartedOnGround = grounded;
+	player.attackPogoConsumed = false;
+
+	// Grounded side slashes nudge the player a little off the wall if the swing
+	// immediately collides, so tight hallway attacks do not feel completely static.
+	if (grounded && direction.x != 0)
+	{
+		glm::vec4 attackRect = getAttackRect();
+		if (roomRectHitsSolid(room, attackRect))
+		{
+			player.physics.transform.pos.x -= direction.x * kGroundAttackWallPushDistance;
+		}
+	}
+}
+
+bool Gameplay::tryStartPogoBounce(float pogoJumpSpeed)
+{
+	if (!player.attackActive || player.attackPogoConsumed || player.attackDirection.y <= 0)
+	{
+		return false;
+	}
+
+	glm::vec4 attackRect = getAttackRect();
+	if (attackRect.z <= 0.f || attackRect.w <= 0.f)
+	{
+		return false;
+	}
+
+	for (PogoCircle const &pogoCircle : room.pogoCircles)
+	{
+		if (!pogoCircleOverlapsRect(pogoCircle, attackRect))
+		{
+			continue;
+		}
+
+		// Pogo bounces are a direct downward-slash response, so they kick the
+		// player upward immediately without needing a separate cooldown system.
+		player.attackPogoConsumed = true;
+		player.pogoBounceActive = true;
+		player.physics.velocity.y = -pogoJumpSpeed;
+		player.physics.downTouch = false;
+		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
+		player.wallHoldActive = false;
+		player.wallJumpCarryVelocity = 0.f;
+		player.wallJumpGraceSide = 0;
+		player.wallJumpGraceTimer = 0.f;
+		player.wallGrabLockTimer = tuning.wallGrabDelayAfterGroundJump;
+		player.glideActive = false;
+		player.glideTimer = 0.f;
+		player.glideArmedFromDoubleJump = false;
+		player.coyoteTimer = 0.f;
+		player.jumpBufferTimer = 0.f;
+		return true;
+	}
+
+	return false;
+}
+
+void Gameplay::updateAttack(float deltaTime)
+{
+	if (!player.attackActive)
+	{
+		return;
+	}
+
+	player.attackTimer -= deltaTime;
+	if (player.attackTimer <= 0.f)
+	{
+		player.attackActive = false;
+		player.attackTimer = 0.f;
+	}
+}
+
 void Gameplay::updateMeasureTool(platform::Input &input, gl2d::Renderer2D &renderer)
 {
 	mouseScreenPosition = {static_cast<float>(input.mouseX), static_cast<float>(input.mouseY)};
@@ -1056,6 +1361,85 @@ bool Gameplay::updateDash(float deltaTime)
 	return player.dashActive;
 }
 
+void Gameplay::startWallGrabDash()
+{
+	if (player.wallGrabSide == 0)
+	{
+		return;
+	}
+
+	player.wallGrabDashActive = true;
+	player.wallGrabDashTimer = 0.f;
+	player.wallGrabDashStartY = player.physics.transform.pos.y;
+	player.wallGrabDashPreviousOffset = 0.f;
+	player.dashCooldownTimer = tuning.dashCooldownTime;
+	player.jumpQueuedAfterDash = false;
+	player.glideArmedFromDoubleJump = false;
+	player.wallJumpCarryVelocity = 0.f;
+	player.physics.velocity = {};
+	player.physics.acceleration = {};
+
+	if (!player.physics.downTouch)
+	{
+		player.airDashAvailable = false;
+	}
+}
+
+bool Gameplay::updateWallGrabDash(float deltaTime)
+{
+	if (!player.wallGrabDashActive)
+	{
+		return false;
+	}
+
+	if (!tuning.enableDash || !tuning.enableWallGrab || player.wallGrabSide == 0)
+	{
+		player.wallGrabDashActive = false;
+		return false;
+	}
+
+	if (!playerTouchesWallOnSide(player, room, player.wallGrabSide))
+	{
+		player.wallGrabDashActive = false;
+		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
+		return false;
+	}
+
+	float dashDistance = std::max(tuning.wallGrabDashDistance, 0.f);
+	float dashSpeed = std::max(tuning.wallGrabDashSpeed, 0.001f);
+	float dashDuration = std::max(dashDistance / dashSpeed, 0.001f);
+	player.wallGrabDashTimer += deltaTime;
+
+	float dashProgress = easing::clamp01(player.wallGrabDashTimer / dashDuration);
+	float dashOffset = easing::easeOutCubic(dashProgress) * dashDistance;
+	float dashDeltaY = dashOffset - player.wallGrabDashPreviousOffset;
+	float startY = player.physics.transform.pos.y;
+
+	// This is a small scripted upward dash that climbs the player up the same
+	// wall without leaving the grab state.
+	player.physics.lastPosition = player.physics.transform.pos;
+	player.physics.transform.pos.y -= dashDeltaY;
+	player.physics.velocity = {};
+	player.physics.acceleration = {};
+	player.physics.resolveConstrains(room);
+	player.physics.downTouch = playerTouchesGround(player, room);
+	player.physics.upTouch = false;
+	player.physics.updateFinal();
+
+	float actualOffset = player.wallGrabDashStartY - player.physics.transform.pos.y;
+	float actualDeltaY = startY - player.physics.transform.pos.y;
+	player.wallGrabDashPreviousOffset = actualOffset;
+
+	bool blocked = std::abs(actualDeltaY - dashDeltaY) > 0.001f;
+	if (dashProgress >= 1.f || blocked)
+	{
+		player.wallGrabDashActive = false;
+	}
+
+	return player.wallGrabDashActive;
+}
+
 void Gameplay::refreshDashAvailability()
 {
 	if (player.physics.downTouch || player.physics.leftTouch || player.physics.rightTouch || player.wallGrabSide != 0)
@@ -1087,7 +1471,10 @@ bool Gameplay::tryStartZiplineRide()
 	player.ziplineActive = true;
 	player.ziplineIndex = target.ziplineIndex;
 	player.ziplineDistance = target.distanceAlong;
-	player.ziplineSpeed = std::max(0.f, glm::dot(incomingVelocity, target.slide.downhillDirection));
+	player.ziplineSpeed = std::clamp(
+		std::max(0.f, glm::dot(incomingVelocity, target.slide.downhillDirection)),
+		0.f,
+		tuning.ziplineMaxSpeed);
 	player.wallGrabSide = 0;
 	player.wallGrabHoldTimer = 0.f;
 	player.wallJumpGraceSide = 0;
@@ -1172,7 +1559,8 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 		player.physics.rightTouch = false;
 		if (preserveZiplineMomentum)
 		{
-			player.wallJumpCarryVelocity = slide.downhillDirection.x * player.ziplineSpeed;
+			player.wallJumpCarryVelocity = 0.f;
+			player.physics.velocity.x = slide.downhillDirection.x * player.ziplineSpeed;
 			player.physics.velocity.y = slide.downhillDirection.y * player.ziplineSpeed;
 		}
 		else
@@ -1209,7 +1597,14 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 
 	if (jumpPressed)
 	{
+		float jumpExitCarry =
+			slide.downhillDirection.x *
+			player.ziplineSpeed *
+			tuning.ziplineJumpCarryMultiplier;
 		detachFromZipline(currentPoint, false);
+		// Jumping off the rail should keep the built-up downhill momentum as a
+		// short-lived horizontal physics carry so faster ziplines launch farther.
+		player.physics.velocity.x = jumpExitCarry;
 		player.physics.downTouch = true;
 		player.coyoteTimer = tuning.coyoteTime;
 		player.jumpBufferTimer = tuning.jumpBufferTime;
@@ -1296,6 +1691,7 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 
 	float downhillAcceleration = tuning.gravity * std::max(slide.downhillDirection.y, 0.f);
 	player.ziplineSpeed += downhillAcceleration * deltaTime;
+	player.ziplineSpeed = std::clamp(player.ziplineSpeed, 0.f, tuning.ziplineMaxSpeed);
 	player.ziplineDistance += player.ziplineSpeed * deltaTime;
 
 	if (player.ziplineDistance >= slide.length)
@@ -1543,31 +1939,55 @@ void Gameplay::updateWallGrabState(float moveInput)
 	player.physics.velocity.y = 0.f;
 }
 
-void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, bool jumpHeld, bool downPressed, bool dashPressed, bool sprintHeld)
+void Gameplay::updatePlayer(float deltaTime, float moveInput, bool upHeld, bool downHeld, bool jumpPressed, bool jumpHeld, bool downPressed, bool dashPressed, bool sprintHeld, bool attackPressed)
 {
 	if (moveInput != 0.f)
 	{
 		player.lastMoveDirection = getMoveDirection(moveInput);
 	}
 
+	bool touchingPogoCircle = playerTouchesCollisionPogoCircle(player, room);
+
 	float jumpRiseGravity = tuning.gravity * std::max(tuning.jumpRiseGravityMultiplier, 0.01f);
 	float jumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.jumpHeight);
 	float doubleJumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.doubleJumpHeight);
+	float pogoJumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.pogoJumpHeight);
 
+	player.attackCooldownTimer -= deltaTime;
+	player.attackCooldownTimer = std::max(player.attackCooldownTimer, 0.f);
 	player.dashCooldownTimer -= deltaTime;
 	player.dashCooldownTimer = std::max(player.dashCooldownTimer, 0.f);
 	player.ziplineDetachTimer -= deltaTime;
 	player.ziplineDetachTimer = std::max(player.ziplineDetachTimer, 0.f);
+	updateAttack(deltaTime);
+	if (player.pogoBounceActive && player.physics.velocity.y >= 0.f)
+	{
+		player.pogoBounceActive = false;
+	}
 
 	if (player.dashActive && !tuning.enableDash)
 	{
 		player.dashActive = false;
 	}
 
+	if (player.wallGrabDashActive && (!tuning.enableDash || !tuning.enableWallGrab))
+	{
+		player.wallGrabDashActive = false;
+	}
+
 	if (player.ziplineActive)
 	{
 		if (updateZiplineRide(deltaTime, jumpPressed, downPressed, dashPressed, moveInput, jumpSpeed))
 		{
+			return;
+		}
+	}
+
+	if (player.wallGrabDashActive)
+	{
+		if (updateWallGrabDash(deltaTime))
+		{
+			refreshDashAvailability();
 			return;
 		}
 	}
@@ -1593,7 +2013,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	{
 		player.smoothedMoveInput = 0.f;
 	}
-	bool grounded = player.physics.downTouch;
+	bool grounded = player.physics.downTouch && !touchingPogoCircle;
 	if (tuning.enableWallGrab)
 	{
 		updateRememberedWallInput(deltaTime, moveInput);
@@ -1614,6 +2034,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.coyoteTimer = tuning.coyoteTime;
 		player.doubleJumpAvailable = tuning.enableDoubleJump;
 		player.glideArmedFromDoubleJump = false;
+		player.pogoBounceActive = false;
 		player.wallJumpGraceSide = 0;
 		player.wallJumpGraceTimer = 0.f;
 		player.wallJumpCarryVelocity = 0.f;
@@ -1682,17 +2103,30 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	bool canStartDash = tuning.enableDash &&
 		dashPressed &&
 		!player.dashActive &&
+		!player.wallGrabDashActive &&
 		player.dashCooldownTimer <= 0.f &&
 		(grounded || player.airDashAvailable || player.wallGrabSide != 0);
 	if (canStartDash)
 	{
-		int dashDirection = getMoveDirection(moveInput);
-		if (dashDirection == 0)
+		int inputDirection = getMoveDirection(moveInput);
+		bool wantsWallGrabDash =
+			tuning.enableWallGrab &&
+			player.wallGrabSide != 0 &&
+			inputDirection == player.wallGrabSide;
+		if (wantsWallGrabDash)
 		{
-			dashDirection = player.lastMoveDirection;
+			startWallGrabDash();
 		}
+		else
+		{
+			int dashDirection = inputDirection;
+			if (dashDirection == 0)
+			{
+				dashDirection = player.lastMoveDirection;
+			}
 
-		startDash(dashDirection);
+			startDash(dashDirection);
+		}
 	}
 
 	if (player.dashActive)
@@ -1728,7 +2162,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		return;
 	}
 
-	if ((player.wallGrabSide != 0 || player.wallJumpGraceTimer > 0.f) && player.jumpBufferTimer > 0.f)
+	if (!touchingPogoCircle && (player.wallGrabSide != 0 || player.wallJumpGraceTimer > 0.f) && player.jumpBufferTimer > 0.f)
 	{
 		int previousWallGrabSide = player.wallGrabSide != 0
 			? player.wallGrabSide
@@ -1746,15 +2180,17 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.physics.downTouch = false;
 		player.coyoteTimer = 0.f;
 		player.jumpBufferTimer = 0.f;
+		player.pogoBounceActive = false;
 		player.glideArmedFromDoubleJump = false;
 	}
 
-	if (player.wallGrabSide == 0 && player.jumpBufferTimer > 0.f && player.coyoteTimer > 0.f)
+	if (!touchingPogoCircle && player.wallGrabSide == 0 && player.jumpBufferTimer > 0.f && player.coyoteTimer > 0.f)
 	{
 		player.physics.velocity.y = -jumpSpeed;
 		player.physics.downTouch = false;
 		player.coyoteTimer = 0.f;
 		player.jumpBufferTimer = 0.f;
+		player.pogoBounceActive = false;
 		player.glideArmedFromDoubleJump = false;
 		player.wallGrabHoldTimer = 0.f;
 		player.wallGrabLockTimer = tuning.wallGrabDelayAfterGroundJump;
@@ -1776,6 +2212,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	bool canDoubleJump =
 		tuning.enableDoubleJump &&
 		player.doubleJumpAvailable &&
+		!touchingPogoCircle &&
 		player.wallGrabSide == 0 &&
 		!grounded &&
 		player.coyoteTimer <= 0.f &&
@@ -1791,6 +2228,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.physics.downTouch = false;
 		player.jumpBufferTimer = 0.f;
 		player.doubleJumpAvailable = false;
+		player.pogoBounceActive = false;
 		player.glideArmedFromDoubleJump = true;
 		player.glideActive = false;
 		player.glideTimer = 0.f;
@@ -1843,7 +2281,29 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.glideArmedFromDoubleJump = false;
 	}
 
-	if (!jumpHeld && player.physics.velocity.y < 0.f)
+	bool canStartAttack =
+		attackPressed &&
+		!player.attackActive &&
+		player.attackCooldownTimer <= 0.f &&
+		!player.dashActive &&
+		!player.wallGrabDashActive &&
+		!player.wallClimbActive &&
+		!player.ziplineActive &&
+		!player.ziplineDashActive;
+	if (canStartAttack)
+	{
+		startAttack(
+			getAttackDirection(moveInput, upHeld, downHeld),
+			player.physics.downTouch);
+	}
+
+	if (tryStartPogoBounce(pogoJumpSpeed))
+	{
+		touchingPogoCircle = false;
+		grounded = false;
+	}
+
+	if (!jumpHeld && player.physics.velocity.y < 0.f && !player.pogoBounceActive)
 	{
 		player.physics.velocity.y *= tuning.jumpCutMultiplier;
 	}
@@ -1878,6 +2338,7 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		player.glideActive = false;
 		player.glideTimer = 0.f;
 		player.wallJumpCarryVelocity = 0.f;
+		player.physics.velocity.x = 0.f;
 		int wallInputSide = getMoveDirection(moveInput);
 		player.wallHoldActive =
 			tuning.enableWallGrab &&
@@ -1903,10 +2364,27 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 		}
 	}
 
-	player.physics.velocity.x = 0.f;
-	player.physics.updateForces(deltaTime, {0.f, 0.f});
+	// Horizontal input stays direct, but scripted carries such as zipline jump
+	// momentum get one small physics window with drag before fading out.
+	player.physics.updateForces(deltaTime, {tuning.jumpCarryVelocityDrag, 0.f});
 	player.physics.resolveConstrains(room);
+	touchingPogoCircle = resolvePogoCircleCollisions(player, room);
+	float minPlayerX = player.physics.transform.w * 0.5f;
+	float maxPlayerX = std::max(minPlayerX, room.size.x - player.physics.transform.w * 0.5f);
+	player.physics.transform.pos.x = std::clamp(
+		player.physics.transform.pos.x,
+		minPlayerX,
+		maxPlayerX);
 	player.physics.updateFinal();
+	if (tryStartPogoBounce(pogoJumpSpeed))
+	{
+		touchingPogoCircle = false;
+	}
+	if (touchingPogoCircle)
+	{
+		player.physics.downTouch = false;
+		player.coyoteTimer = 0.f;
+	}
 	if (player.wallGrabSide == 0)
 	{
 		player.wallHoldActive = false;
@@ -1921,8 +2399,17 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool jumpPressed, 
 	{
 		return;
 	}
-	updateWallGrabState(moveInput);
-	if (tryStartWallClimb(moveInput))
+	if (!touchingPogoCircle)
+	{
+		updateWallGrabState(moveInput);
+	}
+	else
+	{
+		player.wallGrabSide = 0;
+		player.wallGrabHoldTimer = 0.f;
+		player.wallHoldActive = false;
+	}
+	if (!touchingPogoCircle && tryStartWallClimb(moveInput))
 	{
 		refreshDashAvailability();
 		return;
@@ -1953,6 +2440,8 @@ void Gameplay::drawRoom(gl2d::Renderer2D &renderer)
 	const gl2d::Color4f solidBlockColor = {0.23f, 0.26f, 0.32f, 1.f};
 	const gl2d::Color4f spikeBlockColor = {0.86f, 0.18f, 0.20f, 1.f};
 	const gl2d::Color4f noGrabBlockColor = {0.56f, 0.47f, 0.22f, 1.f};
+	const gl2d::Color4f pogoCircleColor = {0.82f, 0.42f, 1.0f, 0.92f};
+	const gl2d::Color4f pogoCircleDisabledColor = {0.74f, 0.48f, 0.92f, 0.42f};
 	const gl2d::Color4f ziplineLineColor = {0.76f, 0.78f, 0.80f, 0.82f};
 	const gl2d::Color4f ziplinePointColor = {0.94f, 0.84f, 0.28f, 0.92f};
 	constexpr float ziplineLineWidth = 0.05f;
@@ -1978,6 +2467,16 @@ void Gameplay::drawRoom(gl2d::Renderer2D &renderer)
 						? noGrabBlockColor
 						: spikeBlockColor);
 		}
+	}
+
+	for (PogoCircle const &pogoCircle : room.pogoCircles)
+	{
+		renderer.renderCircleOutline(
+			pogoCircle.center,
+			pogoCircle.radius,
+			pogoCircle.collisionEnabled ? pogoCircleColor : pogoCircleDisabledColor,
+			0.08f,
+			32);
 	}
 
 	// Ziplines are pure room markers for now, so gameplay just renders their path and anchors.
@@ -2060,6 +2559,33 @@ void Gameplay::drawPlayer(gl2d::Renderer2D &renderer)
 	renderer.renderRectangle(player.physics.transform.getAABB(), playerColor);
 }
 
+void Gameplay::drawAttack(gl2d::Renderer2D &renderer)
+{
+	if (!player.attackActive)
+	{
+		return;
+	}
+
+	glm::vec4 attackRect = getAttackRect();
+	if (attackRect.z <= 0.f || attackRect.w <= 0.f)
+	{
+		return;
+	}
+
+	gl2d::Color4f attackColor = {1.0f, 0.94f, 0.78f, 0.22f};
+	if (player.attackDirection.y < 0)
+	{
+		attackColor = {0.92f, 0.96f, 1.0f, 0.24f};
+	}
+	else if (player.attackDirection.y > 0)
+	{
+		attackColor = {1.0f, 0.88f, 0.70f, 0.24f};
+	}
+
+	renderer.renderRectangle(attackRect, attackColor);
+	renderer.renderRectangleOutline(attackRect, {1.0f, 0.98f, 0.88f, 0.92f}, 0.08f);
+}
+
 void Gameplay::drawMeasureOverlay(gl2d::Renderer2D &renderer)
 {
 	if (!measureMode)
@@ -2126,8 +2652,10 @@ void Gameplay::drawDebugWindow()
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
 		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
 		ImGui::TextUnformatted("` toggles between gameplay and the last editor mode");
+		ImGui::TextUnformatted("X attacks, hold Up / Down to aim the slash");
+		ImGui::TextUnformatted("Downslash a pogo circle to bounce back up");
 		ImGui::TextUnformatted("Shift presses dash, holding Shift keeps sprint on");
-		ImGui::TextUnformatted("Controller: LStick/DPad move, A jumps, RT dashes");
+		ImGui::TextUnformatted("Controller: LStick/DPad move, A jumps, X attacks, RT dashes");
 		ImGui::TextUnformatted("Zipline dash follows the rail and can reverse with left / right");
 		ImGui::TextUnformatted("Jump again in air to double jump, then hold to glide");
 		ImGui::TextUnformatted("Wall grab latches once started, Down drops it");
@@ -2165,17 +2693,24 @@ void Gameplay::drawDebugWindow()
 		ImGui::SliderFloat("Sprint Speed", &tuning.sprintMoveSpeed, 0.5f, 40.f, "%.2f");
 		ImGui::SliderFloat("Move Start Ease", &tuning.moveStartEaseTime, 0.001f, 0.15f, "%.3f");
 		ImGui::SliderFloat("Move Stop Ease", &tuning.moveStopEaseTime, 0.001f, 0.15f, "%.3f");
+		ImGui::SliderFloat("Attack Cooldown", &tuning.attackCooldownTime, 0.f, 0.60f, "%.2f");
 		ImGui::SliderFloat("Dash Distance", &tuning.dashDistance, 0.5f, 24.f, "%.2f");
 		ImGui::SliderFloat("Dash Time", &tuning.dashDuration, 0.02f, 0.40f, "%.3f");
 		ImGui::SliderFloat("Dash Cooldown", &tuning.dashCooldownTime, 0.f, 1.f, "%.2f");
+		ImGui::SliderFloat("Wall Grab Dash Dist", &tuning.wallGrabDashDistance, 0.f, 12.f, "%.2f");
+		ImGui::SliderFloat("Wall Grab Dash Speed", &tuning.wallGrabDashSpeed, 1.f, 60.f, "%.2f");
 		ImGui::SliderFloat("Jump Height", &tuning.jumpHeight, 0.5f, 20.f, "%.2f");
 		ImGui::SliderFloat("Double Jump Height", &tuning.doubleJumpHeight, 0.5f, 20.f, "%.2f");
+		ImGui::SliderFloat("Pogo Height", &tuning.pogoJumpHeight, 0.5f, 20.f, "%.2f");
 		ImGui::SliderFloat("Jump Snappiness", &tuning.jumpRiseGravityMultiplier, 0.25f, 4.f, "%.2f");
 		ImGui::SliderFloat("Glide Fall Speed", &tuning.glideFallSpeed, 0.5f, 30.f, "%.2f");
 		ImGui::SliderFloat("Glide Enter Time", &tuning.glideEnterTime, 0.f, 0.20f, "%.3f");
 		ImGui::SliderFloat("Wall Jump Detach", &tuning.wallJumpDetachDistance, 0.f, 3.f, "%.2f");
 		ImGui::SliderFloat("Wall Jump Push", &tuning.wallJumpPushSpeed, 0.f, 40.f, "%.2f");
 		ImGui::SliderFloat("Wall Jump Drag", &tuning.wallJumpCarryDrag, 1.f, 120.f, "%.2f");
+		ImGui::SliderFloat("Zipline Jump Carry Drag", &tuning.jumpCarryVelocityDrag, 0.f, 60.f, "%.2f");
+		ImGui::SliderFloat("Zipline Jump Carry Mult", &tuning.ziplineJumpCarryMultiplier, 0.f, 4.f, "%.2f");
+		ImGui::SliderFloat("Zipline Max Speed", &tuning.ziplineMaxSpeed, 1.f, 120.f, "%.2f");
 		ImGui::SliderFloat("Gravity", &tuning.gravity, 1.f, 120.f, "%.2f");
 		ImGui::SliderFloat("Max Fall Speed", &tuning.maxFallSpeed, 1.f, 80.f, "%.2f");
 		ImGui::SliderFloat("Wall Grab Hold", &tuning.wallGrabHoldTime, 0.f, 0.30f, "%.2f");
@@ -2191,9 +2726,11 @@ void Gameplay::drawDebugWindow()
 		float jumpRiseGravity = tuning.gravity * std::max(tuning.jumpRiseGravityMultiplier, 0.01f);
 		float jumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.jumpHeight);
 		float doubleJumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.doubleJumpHeight);
+		float pogoJumpSpeed = std::sqrt(2.f * jumpRiseGravity * tuning.pogoJumpHeight);
 		float jumpApexTime = jumpSpeed / std::max(jumpRiseGravity, 0.001f);
 		ImGui::Text("Derived Jump Speed: %.2f", jumpSpeed);
 		ImGui::Text("Derived Double Jump Speed: %.2f", doubleJumpSpeed);
+		ImGui::Text("Derived Pogo Speed: %.2f", pogoJumpSpeed);
 		ImGui::Text("Derived Rise Gravity: %.2f", jumpRiseGravity);
 		ImGui::Text("Derived Apex Time: %.2f", jumpApexTime);
 
@@ -2239,6 +2776,12 @@ void Gameplay::drawDebugWindow()
 			player.dashActive ? 1 : 0,
 			player.airDashAvailable ? 1 : 0,
 			player.dashCooldownTimer);
+		ImGui::Text("Attack: active %d  dir %d,%d  cooldown %.2f",
+			player.attackActive ? 1 : 0,
+			player.attackDirection.x,
+			player.attackDirection.y,
+			player.attackCooldownTimer);
+		ImGui::Text("Pogo Bounce: %d", player.pogoBounceActive ? 1 : 0);
 		ImGui::Text("Move Input Smooth: %.2f", player.smoothedMoveInput);
 		ImGui::Text("Wall Input Memory: %.2f", player.rememberedWallInputTimer);
 		ImGui::Text("Wall Carry: %.2f", player.wallJumpCarryVelocity);

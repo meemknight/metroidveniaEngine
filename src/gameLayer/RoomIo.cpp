@@ -108,6 +108,23 @@ namespace
 			}
 		}
 
+		for (PogoCircle const &pogoCircle : room.pogoCircles)
+		{
+			if (pogoCircle.radius <= 0.f)
+			{
+				errorMessage = "Pogo circle radius must stay above zero";
+				return false;
+			}
+
+			if (pogoCircle.center.x < 0.f || pogoCircle.center.y < 0.f ||
+				pogoCircle.center.x > room.size.x ||
+				pogoCircle.center.y > room.size.y)
+			{
+				errorMessage = "Pogo circle centers must stay inside the room";
+				return false;
+			}
+		}
+
 		for (SpawnRegion const &spawnRegion : room.spawnRegions)
 		{
 			if (spawnRegion.rects.empty())
@@ -244,6 +261,7 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 			{"height", room.size.y},
 			{"blocks", nlohmann::json::array()},
 			{"doors", nlohmann::json::array()},
+			{"pogoCircles", nlohmann::json::array()},
 			{"spawnRegions", nlohmann::json::array()},
 			{"ziplines", nlohmann::json::array()}
 		};
@@ -268,6 +286,16 @@ RoomIoResult saveRoomToFile(Room const &room, char const *levelName)
 				{"height", door.size.y},
 				{"playerSpawnX", door.playerSpawnPosition.x},
 				{"playerSpawnY", door.playerSpawnPosition.y}
+			});
+		}
+
+		for (PogoCircle const &pogoCircle : room.pogoCircles)
+		{
+			data["pogoCircles"].push_back({
+				{"centerX", pogoCircle.center.x},
+				{"centerY", pogoCircle.center.y},
+				{"radius", pogoCircle.radius},
+				{"collisionEnabled", pogoCircle.collisionEnabled}
 			});
 		}
 
@@ -372,6 +400,7 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 		}
 
 		room.doors.clear();
+		room.pogoCircles.clear();
 		room.spawnRegions.clear();
 		room.ziplines.clear();
 		if (data.contains("doors"))
@@ -436,6 +465,42 @@ RoomIoResult loadRoomFromFile(Room &room, char const *levelName)
 				}
 
 				room.doors.push_back(door);
+			}
+		}
+
+		if (data.contains("pogoCircles"))
+		{
+			if (!data["pogoCircles"].is_array())
+			{
+				result.message = "Pogo circles must be stored as a JSON array";
+				return result;
+			}
+
+			for (auto const &pogoCircleData : data["pogoCircles"])
+			{
+				if (!pogoCircleData.is_object())
+				{
+					result.message = "Pogo circle entries must be JSON objects";
+					return result;
+				}
+
+				PogoCircle pogoCircle = {};
+				pogoCircle.center = {
+					pogoCircleData.value("centerX", 0.f),
+					pogoCircleData.value("centerY", 0.f)
+				};
+				pogoCircle.radius = pogoCircleData.value("radius", 1.f);
+				pogoCircle.collisionEnabled = pogoCircleData.value("collisionEnabled", false);
+
+				if (pogoCircle.radius <= 0.f)
+				{
+					result.message = "Pogo circle radius must stay above zero";
+					return result;
+				}
+
+				pogoCircle.center.x = std::clamp(pogoCircle.center.x, 0.f, static_cast<float>(room.size.x));
+				pogoCircle.center.y = std::clamp(pogoCircle.center.y, 0.f, static_cast<float>(room.size.y));
+				room.pogoCircles.push_back(pogoCircle);
 			}
 		}
 

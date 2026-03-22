@@ -168,6 +168,20 @@
 			"y": 112.0
 		},
 		{
+			"doorLinks": [],
+			"flags": 0,
+			"name": "pogoRoom",
+			"x": -567.10791015625,
+			"y": 121.14813232421875
+		},
+		{
+			"doorLinks": [],
+			"flags": 0,
+			"name": "pogoRoom2",
+			"x": -569.0,
+			"y": 16.0
+		},
+		{
 			"doorLinks": [
 				{
 					"door": "door 1",
@@ -225,6 +239,13 @@
 			"name": "spikeTest",
 			"x": 33.72173309326172,
 			"y": 95.0117416381836
+		},
+		{
+			"doorLinks": [],
+			"flags": 0,
+			"name": "testZip",
+			"x": -735.0,
+			"y": -81.0
 		},
 		{
 			"doorLinks": [

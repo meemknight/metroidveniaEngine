@@ -21,6 +21,16 @@ namespace
 	const gl2d::Color4f kSelectedDoorOutlineColor = {1.0f, 0.78f, 0.28f, 1.0f};
 	const gl2d::Color4f kDoorSpawnFillColor = {1.0f, 0.88f, 0.18f, 0.24f};
 	const gl2d::Color4f kDoorSpawnOutlineColor = {1.0f, 0.92f, 0.32f, 0.96f};
+	const gl2d::Color4f kPogoCircleColor = {0.78f, 0.36f, 1.0f, 0.92f};
+	const gl2d::Color4f kPogoCircleFillColor = {0.72f, 0.28f, 0.98f, 0.10f};
+	const gl2d::Color4f kPogoCircleDisabledColor = {0.68f, 0.42f, 0.92f, 0.44f};
+	const gl2d::Color4f kPogoCircleDisabledFillColor = {0.62f, 0.36f, 0.90f, 0.04f};
+	const gl2d::Color4f kSelectedPogoCircleColor = {0.88f, 0.58f, 1.0f, 1.0f};
+	const gl2d::Color4f kSelectedPogoCircleFillColor = {0.82f, 0.46f, 1.0f, 0.16f};
+	constexpr float kPogoCircleDefaultRadius = 1.f;
+	constexpr float kPogoCircleHandleSize = 0.34f;
+	constexpr float kPogoCircleCenterHitRadius = 0.45f;
+	constexpr float kPogoCircleResizeHitRadius = 0.40f;
 	const gl2d::Color4f kSpawnRegionFillColor = {0.26f, 0.56f, 1.0f, 0.08f};
 	const gl2d::Color4f kSpawnRegionOutlineColor = {0.38f, 0.68f, 1.0f, 0.34f};
 	const gl2d::Color4f kSelectedSpawnRegionFillColor = {0.32f, 0.62f, 1.0f, 0.14f};
@@ -179,6 +189,7 @@ namespace
 			ImGui::IsPopupOpen("Discard Current Changes") ||
 			ImGui::IsPopupOpen("Resize Level") ||
 			ImGui::IsPopupOpen("Delete Door") ||
+			ImGui::IsPopupOpen("Delete Pogo Circle") ||
 			ImGui::IsPopupOpen("Delete Spawn Region") ||
 			ImGui::IsPopupOpen("Delete Zipline");
 	}
@@ -274,6 +285,10 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		{
 			clearDoorSelection();
 		}
+		if (selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+		{
+			clearPogoCircleSelection();
+		}
 		if (selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
 		{
 			clearSpawnRegionSelection();
@@ -294,6 +309,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		setViewCenter({}, renderer);
 		clearMoveSelection();
 		clearDoorSelection();
+		clearPogoCircleSelection();
 		clearSpawnRegionSelection();
 		clearZiplineSelection();
 	}
@@ -312,6 +328,7 @@ void LevelEditor::update(float deltaTime, platform::Input &input, gl2d::Renderer
 		drawMoveSelection(renderer);
 		drawSpawnRegions(room, renderer);
 		drawDoors(room, renderer);
+		drawPogoCircles(room, renderer);
 		drawZiplines(room, renderer);
 		drawRectPreview(renderer);
 		drawHoveredTile(renderer);
@@ -464,7 +481,7 @@ void LevelEditor::updateCamera(float deltaTime, platform::Input &input, gl2d::Re
 
 void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &renderer, Room &room, bool gameViewFocused)
 {
-	bool hadMoveOperation = tool == moveTool &&
+	bool hadMoveOperation = (tool == moveTool || tool == copyTool) &&
 		(rectDragActive || moveSelection.active || moveSelection.previewActive || moveSelection.dragging);
 
 	if (input.isButtonPressed(platform::Button::Escape))
@@ -473,6 +490,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		pogoCircleDragActive = false;
+		pogoCircleResizeActive = false;
 		spawnRegionDragActive = false;
 		spawnRegionResizeActive = false;
 		spawnRegionSpawnDragActive = false;
@@ -502,6 +521,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		pogoCircleDragActive = false;
+		pogoCircleResizeActive = false;
 		spawnRegionDragActive = false;
 		spawnRegionResizeActive = false;
 		spawnRegionSpawnDragActive = false;
@@ -566,13 +587,13 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 	}
 
 	if (allowMoveShortcut &&
-		tool == moveTool &&
+		(tool == moveTool || tool == copyTool) &&
 		moveSelection.active &&
 		moveSelection.previewActive &&
 		!moveSelection.dragging &&
 		input.isButtonPressed(platform::Button::Enter))
 	{
-		commitMoveSelection(room);
+		commitMoveSelection(room, tool == copyTool);
 		return;
 	}
 
@@ -588,6 +609,10 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (tool == ziplineTool)
 		{
 			requestDeleteSelectedZipline(room);
+		}
+		else if (tool == pogoCircleTool)
+		{
+			requestDeleteSelectedPogoCircle(room);
 		}
 		else if (tool == spawnRegionTool)
 		{
@@ -607,10 +632,12 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::C)) { tool = copyTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR0)) { tool = noGrabTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::P)) { tool = pogoCircleTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 		return;
 	}
@@ -624,10 +651,12 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::C)) { tool = copyTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::NR0)) { tool = noGrabTool; resetToolState(); }
+		if (input.isButtonPressed(platform::Button::P)) { tool = pogoCircleTool; resetToolState(); }
 		if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 	}
 #else
@@ -637,6 +666,8 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		pogoCircleDragActive = false;
+		pogoCircleResizeActive = false;
 		spawnRegionDragActive = false;
 		spawnRegionResizeActive = false;
 		spawnRegionSpawnDragActive = false;
@@ -675,13 +706,13 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 		requestWorldEditorMode = true;
 	}
 
-	if (tool == moveTool &&
+	if ((tool == moveTool || tool == copyTool) &&
 		moveSelection.active &&
 		moveSelection.previewActive &&
 		!moveSelection.dragging &&
 		input.isButtonPressed(platform::Button::Enter))
 	{
-		commitMoveSelection(room);
+		commitMoveSelection(room, tool == copyTool);
 		return;
 	}
 
@@ -691,10 +722,12 @@ void LevelEditor::updateShortcuts(platform::Input &input, gl2d::Renderer2D &rend
 	if (input.isButtonPressed(platform::Button::NR4)) { tool = measureTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR5)) { tool = doorTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR6)) { tool = moveTool; resetToolState(); }
+	if (input.isButtonPressed(platform::Button::C)) { tool = copyTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR7)) { tool = ziplineTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR8)) { tool = spawnRegionTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR9)) { tool = spikeTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::NR0)) { tool = noGrabTool; resetToolState(); }
+	if (input.isButtonPressed(platform::Button::P)) { tool = pogoCircleTool; resetToolState(); }
 	if (input.isButtonPressed(platform::Button::G)) { tuning.showGrid = !tuning.showGrid; }
 #endif
 }
@@ -708,6 +741,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		doorDragActive = false;
 		doorResizeActive = false;
 		doorSpawnDragActive = false;
+		clearPogoCircleSelection();
 		clearSpawnRegionSelection();
 		clearZiplineSelection();
 		return;
@@ -841,6 +875,96 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		createDoorAtHoveredTile(room);
 		doorDragActive = true;
 		doorDragGrabOffset = {};
+		return;
+	}
+
+	if (tool == pogoCircleTool)
+	{
+		if (selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+		{
+			clearPogoCircleSelection();
+		}
+
+		if (pogoCircleDragActive)
+		{
+			if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+			{
+				clearPogoCircleSelection();
+				return;
+			}
+
+			if (!input.isLMouseHeld())
+			{
+				pogoCircleDragActive = false;
+				pushUndoSnapshot(room);
+				return;
+			}
+
+			moveSelectedPogoCircle(
+				room,
+				mouseWorldPosition - pogoCircleDragGrabOffset,
+				input.isButtonHeld(platform::Button::LeftCtrl));
+			return;
+		}
+
+		if (pogoCircleResizeActive)
+		{
+			if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+			{
+				clearPogoCircleSelection();
+				return;
+			}
+
+			if (!input.isLMouseHeld())
+			{
+				pogoCircleResizeActive = false;
+				pushUndoSnapshot(room);
+				return;
+			}
+
+			resizeSelectedPogoCircle(
+				room,
+				mouseWorldPosition,
+				input.isButtonHeld(platform::Button::LeftCtrl));
+			return;
+		}
+
+		if (!input.isLMousePressed())
+		{
+			return;
+		}
+
+		int hoveredResizeIndex = getHoveredPogoCircleResizeIndex(room, mouseWorldPosition);
+		if (hoveredResizeIndex >= 0)
+		{
+			selectedPogoCircleIndex = hoveredResizeIndex;
+			pogoCircleResizeActive = true;
+			doorActionHasError = false;
+			doorActionMessage = {};
+			return;
+		}
+
+		int hoveredCenterIndex = getHoveredPogoCircleCenterIndex(room, mouseWorldPosition);
+		if (hoveredCenterIndex >= 0)
+		{
+			selectedPogoCircleIndex = hoveredCenterIndex;
+			pogoCircleDragActive = true;
+			pogoCircleDragGrabOffset = mouseWorldPosition - room.pogoCircles[selectedPogoCircleIndex].center;
+			doorActionHasError = false;
+			doorActionMessage = {};
+			return;
+		}
+
+		if (input.isButtonHeld(platform::Button::LeftCtrl) && hoveredTileValid)
+		{
+			clearPogoCircleSelection();
+			createPogoCircle(room, mouseWorldPosition);
+			pogoCircleDragActive = true;
+			pogoCircleDragGrabOffset = {};
+			return;
+		}
+
+		clearPogoCircleSelection();
 		return;
 	}
 
@@ -1040,7 +1164,7 @@ void LevelEditor::updateTools(platform::Input &input, Room &room, bool gameViewH
 		return;
 	}
 
-	if (tool == moveTool)
+	if (tool == moveTool || tool == copyTool)
 	{
 		if (moveSelection.dragging)
 		{
@@ -1395,6 +1519,13 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	{
 		clampDoorToRoom(door, resizedRoom);
 	}
+	resizedRoom.pogoCircles = room.pogoCircles;
+	for (PogoCircle &pogoCircle : resizedRoom.pogoCircles)
+	{
+		pogoCircle.center.x = std::clamp(pogoCircle.center.x, 0.f, static_cast<float>(resizedRoom.size.x));
+		pogoCircle.center.y = std::clamp(pogoCircle.center.y, 0.f, static_cast<float>(resizedRoom.size.y));
+		pogoCircle.radius = std::max(pogoCircle.radius, 0.20f);
+	}
 	resizedRoom.spawnRegions = room.spawnRegions;
 	for (SpawnRegion &spawnRegion : resizedRoom.spawnRegions)
 	{
@@ -1413,6 +1544,7 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	clearMoveSelection();
 	doorDragActive = false;
 	doorResizeActive = false;
+	clearPogoCircleSelection();
 	clearSpawnRegionSelection();
 	ziplineCreateDragActive = false;
 	ziplinePointDragActive = false;
@@ -1423,6 +1555,10 @@ void LevelEditor::resizeRoom(Room &room, int newSizeX, int newSizeY)
 	else
 	{
 		syncSelectedDoorBuffer(room);
+	}
+	if (selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+	{
+		clearPogoCircleSelection();
 	}
 	if (selectedSpawnRegionIndex >= static_cast<int>(room.spawnRegions.size()))
 	{
@@ -1514,7 +1650,7 @@ bool LevelEditor::moveSelectionPreviewContainsTile(glm::ivec2 tile) const
 		tile.y < moveSelection.previewPosition.y + moveSelection.size.y;
 }
 
-void LevelEditor::commitMoveSelection(Room &room)
+void LevelEditor::commitMoveSelection(Room &room, bool copyOnly)
 {
 	if (!moveSelection.active || !moveSelection.previewActive)
 	{
@@ -1563,11 +1699,14 @@ void LevelEditor::commitMoveSelection(Room &room)
 		return false;
 	};
 
-	for (Placement const &placement : placements)
+	if (!copyOnly)
 	{
-		if (!containsDestination(placement.source))
+		for (Placement const &placement : placements)
 		{
-			setBlock(room, placement.source.x, placement.source.y, emptyBlock);
+			if (!containsDestination(placement.source))
+			{
+				setBlock(room, placement.source.x, placement.source.y, emptyBlock);
+			}
 		}
 	}
 
@@ -1576,6 +1715,8 @@ void LevelEditor::commitMoveSelection(Room &room)
 		setBlock(room, placement.destination.x, placement.destination.y, placement.type);
 	}
 
+	doorActionHasError = false;
+	doorActionMessage = copyOnly ? "Copied selection" : "Moved selection";
 	clearMoveSelection();
 	pushUndoSnapshot(room);
 }
@@ -1588,6 +1729,15 @@ void LevelEditor::clearDoorSelection()
 	doorSpawnDragActive = false;
 	doorDragGrabOffset = {};
 	selectedDoorName[0] = 0;
+}
+
+void LevelEditor::clearPogoCircleSelection()
+{
+	selectedPogoCircleIndex = -1;
+	pogoCircleDragActive = false;
+	pogoCircleResizeActive = false;
+	pogoCircleDragGrabOffset = {};
+	pendingDeletePogoCircleIndex = -1;
 }
 
 void LevelEditor::clearSpawnRegionSelection()
@@ -1964,6 +2114,159 @@ void LevelEditor::moveSelectedDoorSpawnPosition(Room &room, glm::ivec2 position)
 	doorActionHasError = false;
 	doorActionMessage = "Moved selected door player spawn";
 	levelDirty = true;
+}
+
+int LevelEditor::getHoveredPogoCircleCenterIndex(Room &room, glm::vec2 mouseWorld)
+{
+	auto centerContains = [&](PogoCircle const &pogoCircle)
+	{
+		return glm::distance(mouseWorld, pogoCircle.center) <= kPogoCircleCenterHitRadius;
+	};
+
+	if (selectedPogoCircleIndex >= 0 &&
+		selectedPogoCircleIndex < static_cast<int>(room.pogoCircles.size()) &&
+		centerContains(room.pogoCircles[selectedPogoCircleIndex]))
+	{
+		return selectedPogoCircleIndex;
+	}
+
+	for (int i = static_cast<int>(room.pogoCircles.size()) - 1; i >= 0; i--)
+	{
+		if (centerContains(room.pogoCircles[i]))
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+int LevelEditor::getHoveredPogoCircleResizeIndex(Room &room, glm::vec2 mouseWorld)
+{
+	auto resizeContains = [&](PogoCircle const &pogoCircle)
+	{
+		return glm::distance(mouseWorld, pogoCircle.getResizeHandle()) <= kPogoCircleResizeHitRadius;
+	};
+
+	if (selectedPogoCircleIndex >= 0 &&
+		selectedPogoCircleIndex < static_cast<int>(room.pogoCircles.size()) &&
+		resizeContains(room.pogoCircles[selectedPogoCircleIndex]))
+	{
+		return selectedPogoCircleIndex;
+	}
+
+	for (int i = static_cast<int>(room.pogoCircles.size()) - 1; i >= 0; i--)
+	{
+		if (resizeContains(room.pogoCircles[i]))
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+void LevelEditor::createPogoCircle(Room &room, glm::vec2 center)
+{
+	PogoCircle pogoCircle = {};
+	pogoCircle.center = {
+		std::clamp(center.x, 0.f, static_cast<float>(room.size.x)),
+		std::clamp(center.y, 0.f, static_cast<float>(room.size.y))
+	};
+	pogoCircle.radius = kPogoCircleDefaultRadius;
+	pogoCircle.collisionEnabled = false;
+
+	room.pogoCircles.push_back(pogoCircle);
+	selectedPogoCircleIndex = static_cast<int>(room.pogoCircles.size()) - 1;
+	doorActionHasError = false;
+	doorActionMessage = "Created pogo circle";
+	levelDirty = true;
+}
+
+void LevelEditor::moveSelectedPogoCircle(Room &room, glm::vec2 center, bool snapToCellCenter)
+{
+	if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+	{
+		return;
+	}
+
+	PogoCircle &pogoCircle = room.pogoCircles[selectedPogoCircleIndex];
+	if (snapToCellCenter)
+	{
+		// Ctrl-snap keeps authored circles aligned to tile centers when wanted,
+		// while normal dragging still stays fully freeform.
+		center.x = std::floor(center.x) + 0.5f;
+		center.y = std::floor(center.y) + 0.5f;
+	}
+
+	glm::vec2 clampedCenter = {
+		std::clamp(center.x, 0.f, static_cast<float>(room.size.x)),
+		std::clamp(center.y, 0.f, static_cast<float>(room.size.y))
+	};
+
+	if (glm::distance(pogoCircle.center, clampedCenter) <= 0.0001f)
+	{
+		return;
+	}
+
+	pogoCircle.center = clampedCenter;
+	doorActionHasError = false;
+	doorActionMessage = "Moved pogo circle";
+	levelDirty = true;
+}
+
+void LevelEditor::resizeSelectedPogoCircle(Room &room, glm::vec2 mouseWorld, bool snapToHalfStep)
+{
+	if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+	{
+		return;
+	}
+
+	PogoCircle &pogoCircle = room.pogoCircles[selectedPogoCircleIndex];
+	float newRadius = glm::distance(mouseWorld, pogoCircle.center);
+	if (snapToHalfStep)
+	{
+		newRadius = std::round(newRadius * 2.f) * 0.5f;
+	}
+	newRadius = std::clamp(newRadius, 0.20f, 256.f);
+
+	if (std::abs(pogoCircle.radius - newRadius) <= 0.0001f)
+	{
+		return;
+	}
+
+	pogoCircle.radius = newRadius;
+	doorActionHasError = false;
+	doorActionMessage = "Resized pogo circle";
+	levelDirty = true;
+}
+
+void LevelEditor::requestDeleteSelectedPogoCircle(Room &room)
+{
+	if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+	{
+		return;
+	}
+
+	pendingDeletePogoCircleIndex = selectedPogoCircleIndex;
+	pendingOpenDeletePogoCirclePopup = true;
+}
+
+void LevelEditor::deleteSelectedPogoCircle(Room &room)
+{
+	if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+	{
+		return;
+	}
+
+	room.pogoCircles.erase(room.pogoCircles.begin() + selectedPogoCircleIndex);
+	clearPogoCircleSelection();
+	pendingDeletePogoCircleIndex = -1;
+	pendingOpenDeletePogoCirclePopup = false;
+	doorActionHasError = false;
+	doorActionMessage = "Deleted selected pogo circle";
+	levelDirty = true;
+	pushUndoSnapshot(room);
 }
 
 void LevelEditor::createSpawnRegion(Room &room, glm::ivec2 a, glm::ivec2 b)
@@ -2506,6 +2809,58 @@ void LevelEditor::drawDoors(Room &room, gl2d::Renderer2D &renderer)
 	renderer.popCamera();
 }
 
+void LevelEditor::drawPogoCircles(Room &room, gl2d::Renderer2D &renderer)
+{
+	for (int i = 0; i < static_cast<int>(room.pogoCircles.size()); i++)
+	{
+		PogoCircle const &pogoCircle = room.pogoCircles[i];
+		bool selected = i == selectedPogoCircleIndex;
+		gl2d::Color4f fillColor = pogoCircle.collisionEnabled
+			? (selected ? kSelectedPogoCircleFillColor : kPogoCircleFillColor)
+			: (selected ? gl2d::Color4f{0.72f, 0.50f, 0.94f, 0.09f} : kPogoCircleDisabledFillColor);
+		gl2d::Color4f outlineColor = pogoCircle.collisionEnabled
+			? (selected ? kSelectedPogoCircleColor : kPogoCircleColor)
+			: (selected ? gl2d::Color4f{0.84f, 0.68f, 0.98f, 0.82f} : kPogoCircleDisabledColor);
+
+		renderer.renderCircleOutline(
+			pogoCircle.center,
+			pogoCircle.radius,
+			outlineColor,
+			selected ? 0.12f : 0.08f,
+			32);
+		renderer.renderCircleOutline(
+			pogoCircle.center,
+			std::max(pogoCircle.radius - 0.08f, 0.06f),
+			fillColor,
+			selected ? 0.16f : 0.10f,
+			32);
+
+		// Keep the center visible at all times so moving and reading pogo circles
+		// stays easy even before one is selected.
+		renderer.renderRectangle(
+			{
+				pogoCircle.center.x - kPogoCircleHandleSize * 0.5f,
+				pogoCircle.center.y - kPogoCircleHandleSize * 0.5f,
+				kPogoCircleHandleSize,
+				kPogoCircleHandleSize
+			},
+			selected ? kSelectedPogoCircleColor : outlineColor);
+
+		if (selected && tool == pogoCircleTool)
+		{
+			glm::vec2 handleCenter = pogoCircle.getResizeHandle();
+			renderer.renderRectangle(
+				{
+					handleCenter.x - kPogoCircleHandleSize * 0.5f,
+					handleCenter.y - kPogoCircleHandleSize * 0.5f,
+					kPogoCircleHandleSize,
+					kPogoCircleHandleSize
+				},
+				outlineColor);
+		}
+	}
+}
+
 void LevelEditor::drawSpawnRegions(Room &room, gl2d::Renderer2D &renderer)
 {
 	// Spawn regions stay lightly visible so they can be laid out against the room
@@ -2650,9 +3005,17 @@ void LevelEditor::drawHoveredTile(gl2d::Renderer2D &renderer)
 	{
 		hoverColor = {0.30f, 0.88f, 1.0f, 0.95f};
 	}
+	if (tool == copyTool)
+	{
+		hoverColor = {0.82f, 0.66f, 1.0f, 0.95f};
+	}
 	if (tool == ziplineTool)
 	{
 		hoverColor = {1.0f, 0.88f, 0.34f, 0.95f};
+	}
+	if (tool == pogoCircleTool)
+	{
+		hoverColor = {0.86f, 0.56f, 1.0f, 0.95f};
 	}
 
 	renderer.renderRectangleOutline(
@@ -2675,7 +3038,20 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 		static_cast<float>(moveSelection.size.y)
 	};
 
-	renderer.renderRectangleOutline(sourceRect, {0.28f, 0.82f, 1.0f, 0.95f}, 0.10f);
+	gl2d::Color4f sourceOutlineColor = tool == copyTool
+		? gl2d::Color4f{0.82f, 0.66f, 1.0f, 0.95f}
+		: gl2d::Color4f{0.28f, 0.82f, 1.0f, 0.95f};
+	gl2d::Color4f solidSourceFillColor = tool == copyTool
+		? gl2d::Color4f{0.82f, 0.66f, 1.0f, 0.14f}
+		: gl2d::Color4f{0.28f, 0.82f, 1.0f, 0.14f};
+	gl2d::Color4f spikeSourceFillColor = tool == copyTool
+		? gl2d::Color4f{1.0f, 0.52f, 0.62f, 0.16f}
+		: gl2d::Color4f{1.0f, 0.34f, 0.30f, 0.16f};
+	gl2d::Color4f noGrabSourceFillColor = tool == copyTool
+		? gl2d::Color4f{0.98f, 0.84f, 0.52f, 0.18f}
+		: gl2d::Color4f{0.96f, 0.80f, 0.34f, 0.18f};
+
+	renderer.renderRectangleOutline(sourceRect, sourceOutlineColor, 0.10f);
 
 	for (int y = 0; y < moveSelection.size.y; y++)
 	{
@@ -2695,10 +3071,10 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 					1.f
 				},
 				type == spikeBlock
-					? gl2d::Color4f{1.0f, 0.34f, 0.30f, 0.16f}
+					? spikeSourceFillColor
 					: type == noGrabBlock
-						? gl2d::Color4f{0.96f, 0.80f, 0.34f, 0.18f}
-						: gl2d::Color4f{0.28f, 0.82f, 1.0f, 0.14f});
+						? noGrabSourceFillColor
+						: solidSourceFillColor);
 		}
 	}
 
@@ -2713,7 +3089,20 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 		static_cast<float>(moveSelection.size.x),
 		static_cast<float>(moveSelection.size.y)
 	};
-	renderer.renderRectangleOutline(previewRect, {0.22f, 1.0f, 0.72f, 0.98f}, 0.10f);
+	gl2d::Color4f previewOutlineColor = tool == copyTool
+		? gl2d::Color4f{1.0f, 0.82f, 0.32f, 0.98f}
+		: gl2d::Color4f{0.22f, 1.0f, 0.72f, 0.98f};
+	gl2d::Color4f solidPreviewFillColor = tool == copyTool
+		? gl2d::Color4f{1.0f, 0.82f, 0.32f, 0.24f}
+		: gl2d::Color4f{0.22f, 1.0f, 0.72f, 0.24f};
+	gl2d::Color4f spikePreviewFillColor = tool == copyTool
+		? gl2d::Color4f{1.0f, 0.52f, 0.38f, 0.26f}
+		: gl2d::Color4f{1.0f, 0.36f, 0.32f, 0.26f};
+	gl2d::Color4f noGrabPreviewFillColor = tool == copyTool
+		? gl2d::Color4f{1.0f, 0.88f, 0.46f, 0.28f}
+		: gl2d::Color4f{0.98f, 0.84f, 0.36f, 0.28f};
+
+	renderer.renderRectangleOutline(previewRect, previewOutlineColor, 0.10f);
 
 	for (int y = 0; y < moveSelection.size.y; y++)
 	{
@@ -2733,10 +3122,10 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 					1.f
 				},
 				type == spikeBlock
-					? gl2d::Color4f{1.0f, 0.36f, 0.32f, 0.26f}
+					? spikePreviewFillColor
 					: type == noGrabBlock
-						? gl2d::Color4f{0.98f, 0.84f, 0.36f, 0.28f}
-						: gl2d::Color4f{0.22f, 1.0f, 0.72f, 0.24f});
+						? noGrabPreviewFillColor
+						: solidPreviewFillColor);
 		}
 	}
 }
@@ -2773,13 +3162,17 @@ void LevelEditor::drawRectPreview(gl2d::Renderer2D &renderer)
 	{
 		previewColor = {0.28f, 0.82f, 1.0f, 0.95f};
 	}
+	if (tool == copyTool)
+	{
+		previewColor = {0.82f, 0.66f, 1.0f, 0.95f};
+	}
 
 	renderer.renderRectangleOutline(rect, previewColor, 0.10f);
 }
 
 void LevelEditor::drawMeasureText(gl2d::Renderer2D &renderer)
 {
-	if ((tool != measureTool && tool != rectTool && tool != moveTool && tool != spikeTool && tool != noGrabTool) || !rectDragActive || !measureFont.texture.isValid())
+	if ((tool != measureTool && tool != rectTool && tool != moveTool && tool != copyTool && tool != spikeTool && tool != noGrabTool) || !rectDragActive || !measureFont.texture.isValid())
 	{
 		return;
 	}
@@ -2815,6 +3208,10 @@ void LevelEditor::drawMeasureText(gl2d::Renderer2D &renderer)
 	{
 		textColor = {0.28f, 0.82f, 1.0f, 1.f};
 	}
+	else if (tool == copyTool)
+	{
+		textColor = {0.82f, 0.66f, 1.0f, 1.f};
+	}
 
 	renderer.pushCamera();
 	renderer.renderText(
@@ -2848,6 +3245,9 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		bool hasSelectedDoor = hasLoadedLevel &&
 			selectedDoorIndex >= 0 &&
 			selectedDoorIndex < static_cast<int>(room.doors.size());
+		bool hasSelectedPogoCircle = hasLoadedLevel &&
+			selectedPogoCircleIndex >= 0 &&
+			selectedPogoCircleIndex < static_cast<int>(room.pogoCircles.size());
 		bool hasSelectedSpawnRegion = hasLoadedLevel &&
 			selectedSpawnRegionIndex >= 0 &&
 			selectedSpawnRegionIndex < static_cast<int>(room.spawnRegions.size()) &&
@@ -2864,7 +3264,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
 		ImGui::TextUnformatted("Ctrl+S saves the current level");
 		ImGui::TextUnformatted("Tab returns to the world editor");
-		ImGui::TextUnformatted("Escape cancels active move, rect, spike, no-grab, measure, door, spawn region, or zipline drag input");
+		ImGui::TextUnformatted("Escape cancels active move, copy, rect, spike, no-grab, measure, door, pogo circle, spawn region, or zipline drag input");
 		if (!hasLoadedLevel)
 		{
 			ImGui::TextColored({1.f, 0.88f, 0.35f, 1.f}, "Load or create a level file before editing.");
@@ -2879,10 +3279,12 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		if (ImGui::RadioButton("Measure (4)", tool == measureTool)) { tool = measureTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Door (5)", tool == doorTool)) { tool = doorTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Move (6)", tool == moveTool)) { tool = moveTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Copy (C)", tool == copyTool)) { tool = copyTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Zipline (7)", tool == ziplineTool)) { tool = ziplineTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Spawn Region (8)", tool == spawnRegionTool)) { tool = spawnRegionTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("Spike (9)", tool == spikeTool)) { tool = spikeTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 		if (ImGui::RadioButton("No Grab (0)", tool == noGrabTool)) { tool = noGrabTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
+		if (ImGui::RadioButton("Pogo Circle (P)", tool == pogoCircleTool)) { tool = pogoCircleTool; rectDragActive = false; clearMoveSelection(); doorDragActive = false; doorResizeActive = false; doorSpawnDragActive = false; pogoCircleDragActive = false; pogoCircleResizeActive = false; spawnRegionDragActive = false; spawnRegionResizeActive = false; spawnRegionSpawnDragActive = false; spawnRegionCreateDragActive = false; spawnRegionAddRectArmed = false; ziplineCreateDragActive = false; ziplinePointDragActive = false; }
 
 		if (tool == noneTool)
 		{
@@ -2904,6 +3306,10 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		{
 			ImGui::TextUnformatted("Drag LMB to place solid no-grab blocks, drag RMB to clear");
 		}
+		else if (tool == pogoCircleTool)
+		{
+			ImGui::TextUnformatted("Ctrl+click to add a pogo circle, drag center to move, drag side handle to resize");
+		}
 		else if (tool == doorTool)
 		{
 			ImGui::TextUnformatted("Ctrl+LMB empty tile adds, drag door moves, drag yellow spawn, drag corner resizes");
@@ -2919,6 +3325,14 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		else if (tool == moveTool)
 		{
 			ImGui::TextUnformatted("Drag to select blocks, Ctrl+drag selection to move, Enter places, Escape cancels");
+			if (moveSelection.active)
+			{
+				ImGui::Text("Selection: %d x %d", moveSelection.size.x, moveSelection.size.y);
+			}
+		}
+		else if (tool == copyTool)
+		{
+			ImGui::TextUnformatted("Drag to select blocks, Ctrl+drag selection to copy, Enter places, Escape cancels");
 			if (moveSelection.active)
 			{
 				ImGui::Text("Selection: %d x %d", moveSelection.size.x, moveSelection.size.y);
@@ -3014,6 +3428,46 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 				? ImVec4(1.f, 0.45f, 0.35f, 1.f)
 				: ImVec4(1.0f, 0.84f, 0.32f, 1.f);
 			ImGui::TextColored(doorColor, "%s", doorActionMessage.c_str());
+		}
+
+		ImGui::Separator();
+		ImGui::TextUnformatted("Pogo Circles");
+		ImGui::Text("Count: %d", static_cast<int>(room.pogoCircles.size()));
+		if (hasSelectedPogoCircle)
+		{
+			PogoCircle &selectedPogoCircle = room.pogoCircles[selectedPogoCircleIndex];
+			ImGui::Text("Selected Circle: %d", selectedPogoCircleIndex + 1);
+			ImGui::Text("Center: %.2f, %.2f", selectedPogoCircle.center.x, selectedPogoCircle.center.y);
+			float radius = selectedPogoCircle.radius;
+			if (ImGui::SliderFloat("Pogo Radius", &radius, 0.20f, 32.f, "%.2f"))
+			{
+				selectedPogoCircle.radius = radius;
+				levelDirty = true;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit())
+			{
+				pushUndoSnapshot(room);
+			}
+			bool collisionEnabled = selectedPogoCircle.collisionEnabled;
+			if (ImGui::Checkbox("Pogo Collision", &collisionEnabled))
+			{
+				selectedPogoCircle.collisionEnabled = collisionEnabled;
+				doorActionHasError = false;
+				doorActionMessage = collisionEnabled
+					? "Enabled pogo circle collision"
+					: "Disabled pogo circle collision";
+				levelDirty = true;
+				pushUndoSnapshot(room);
+			}
+			if (ImGui::Button("Delete Selected Pogo Circle"))
+			{
+				requestDeleteSelectedPogoCircle(room);
+			}
+		}
+		else
+		{
+			ImGui::TextUnformatted("Selected: none");
+			ImGui::TextUnformatted("Pick Pogo Circle (P) and Ctrl+click in the room to add one.");
 		}
 
 		ImGui::Separator();
@@ -3162,6 +3616,12 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 			pendingOpenDeleteDoorPopup = false;
 		}
 
+		if (pendingOpenDeletePogoCirclePopup)
+		{
+			ImGui::OpenPopup("Delete Pogo Circle");
+			pendingOpenDeletePogoCirclePopup = false;
+		}
+
 		if (ImGui::BeginPopupModal("Delete Door", 0, ImGuiWindowFlags_AlwaysAutoResize))
 		{
 			ImGui::Text("Delete door \"%s\"?", pendingDeleteDoorName.c_str());
@@ -3195,6 +3655,36 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 			if (ImGui::Button("Cancel", {120.f, 0.f}))
 			{
 				pendingDeleteDoorName.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		if (ImGui::BeginPopupModal("Delete Pogo Circle", 0, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::TextUnformatted("Delete the selected pogo circle?");
+
+			if (ImGui::Button("Delete", {120.f, 0.f}))
+			{
+				selectedPogoCircleIndex = pendingDeletePogoCircleIndex;
+				if (selectedPogoCircleIndex >= 0 &&
+					selectedPogoCircleIndex < static_cast<int>(room.pogoCircles.size()))
+				{
+					deleteSelectedPogoCircle(room);
+				}
+				else
+				{
+					clearPogoCircleSelection();
+					pendingDeletePogoCircleIndex = -1;
+					doorActionHasError = true;
+					doorActionMessage = "That pogo circle no longer exists";
+				}
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", {120.f, 0.f}))
+			{
+				pendingDeletePogoCircleIndex = -1;
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();
@@ -3377,6 +3867,7 @@ void LevelEditor::loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearPogoCircleSelection();
 		clearSpawnRegionSelection();
 		clearZiplineSelection();
 		doorActionMessage.clear();
@@ -3385,6 +3876,8 @@ void LevelEditor::loadSelectedLevel(Room &room, gl2d::Renderer2D &renderer)
 		spawnRegionActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeletePogoCircleIndex = -1;
+		pendingOpenDeletePogoCirclePopup = false;
 		pendingDeleteSpawnRegionIndex = -1;
 		pendingOpenDeleteSpawnRegionPopup = false;
 		pendingDeleteZiplineIndex = -1;
@@ -3446,6 +3939,7 @@ void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearPogoCircleSelection();
 		clearSpawnRegionSelection();
 		clearZiplineSelection();
 		doorActionMessage.clear();
@@ -3454,6 +3948,8 @@ void LevelEditor::createNewLevel(Room &room, gl2d::Renderer2D &renderer)
 		spawnRegionActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeletePogoCircleIndex = -1;
+		pendingOpenDeletePogoCirclePopup = false;
 		pendingDeleteSpawnRegionIndex = -1;
 		pendingOpenDeleteSpawnRegionPopup = false;
 		pendingDeleteZiplineIndex = -1;
@@ -3477,6 +3973,7 @@ LevelEditor::UndoSnapshot LevelEditor::captureUndoSnapshot(Room &room) const
 	snapshot.renameName = renameName;
 	snapshot.selectedDoorIndex = selectedDoorIndex;
 	snapshot.selectedDoorName = selectedDoorName;
+	snapshot.selectedPogoCircleIndex = selectedPogoCircleIndex;
 	snapshot.selectedSpawnRegionIndex = selectedSpawnRegionIndex;
 	snapshot.selectedSpawnRegionRectIndex = selectedSpawnRegionRectIndex;
 	snapshot.selectedZiplineIndex = selectedZiplineIndex;
@@ -3495,6 +3992,7 @@ bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &
 	{
 		if (lhs.size != rhs.size || lhs.blocks.size() != rhs.blocks.size() ||
 			lhs.doors.size() != rhs.doors.size() ||
+			lhs.pogoCircles.size() != rhs.pogoCircles.size() ||
 			lhs.spawnRegions.size() != rhs.spawnRegions.size() ||
 			lhs.ziplines.size() != rhs.ziplines.size())
 		{
@@ -3517,6 +4015,18 @@ bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &
 				leftDoor.position != rightDoor.position ||
 				leftDoor.size != rightDoor.size ||
 				leftDoor.playerSpawnPosition != rightDoor.playerSpawnPosition)
+			{
+				return false;
+			}
+		}
+
+		for (size_t i = 0; i < lhs.pogoCircles.size(); i++)
+		{
+			PogoCircle const &leftCircle = lhs.pogoCircles[i];
+			PogoCircle const &rightCircle = rhs.pogoCircles[i];
+			if (leftCircle.center != rightCircle.center ||
+				leftCircle.radius != rightCircle.radius ||
+				leftCircle.collisionEnabled != rightCircle.collisionEnabled)
 			{
 				return false;
 			}
@@ -3582,6 +4092,7 @@ bool LevelEditor::undoSnapshotsMatch(UndoSnapshot const &a, UndoSnapshot const &
 		a.renameName == b.renameName &&
 		a.selectedDoorIndex == b.selectedDoorIndex &&
 		a.selectedDoorName == b.selectedDoorName &&
+		a.selectedPogoCircleIndex == b.selectedPogoCircleIndex &&
 		a.selectedSpawnRegionIndex == b.selectedSpawnRegionIndex &&
 		a.selectedSpawnRegionRectIndex == b.selectedSpawnRegionRectIndex &&
 		a.selectedZiplineIndex == b.selectedZiplineIndex &&
@@ -3671,6 +4182,7 @@ bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl
 	brushPaintActive = false;
 	clearMoveSelection();
 	clearDoorSelection();
+	clearPogoCircleSelection();
 	clearSpawnRegionSelection();
 	clearZiplineSelection();
 	selectedDoorIndex = snapshot.selectedDoorIndex;
@@ -3681,6 +4193,11 @@ bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl
 	else
 	{
 		selectedDoorName[0] = 0;
+	}
+	selectedPogoCircleIndex = snapshot.selectedPogoCircleIndex;
+	if (selectedPogoCircleIndex < 0 || selectedPogoCircleIndex >= static_cast<int>(room.pogoCircles.size()))
+	{
+		clearPogoCircleSelection();
 	}
 	selectedSpawnRegionIndex = snapshot.selectedSpawnRegionIndex;
 	selectedSpawnRegionRectIndex = snapshot.selectedSpawnRegionRectIndex;
@@ -3701,6 +4218,8 @@ bool LevelEditor::applyUndoSnapshot(UndoSnapshot const &snapshot, Room &room, gl
 
 	pendingDeleteDoorName.clear();
 	pendingOpenDeleteDoorPopup = false;
+	pendingDeletePogoCircleIndex = -1;
+	pendingOpenDeletePogoCirclePopup = false;
 	pendingDeleteSpawnRegionIndex = -1;
 	pendingOpenDeleteSpawnRegionPopup = false;
 	pendingDeleteZiplineIndex = -1;
@@ -3789,11 +4308,14 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 		rectDragActive = false;
 		clearMoveSelection();
 		clearDoorSelection();
+		clearPogoCircleSelection();
 		clearZiplineSelection();
 		doorActionMessage.clear();
 		doorActionHasError = false;
 		pendingDeleteDoorName.clear();
 		pendingOpenDeleteDoorPopup = false;
+		pendingDeletePogoCircleIndex = -1;
+		pendingOpenDeletePogoCirclePopup = false;
 		pendingDeleteZiplineIndex = -1;
 		pendingOpenDeleteZiplinePopup = false;
 		pendingDoorDeletes.clear();
