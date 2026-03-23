@@ -167,6 +167,7 @@ struct WorldEditor
 	bool requestGameplayMode = false;
 	bool requestLevelEditorMode = false;
 	bool requestLoadedLevelEditorMode = false;
+	bool requestEntityEditorMode = false;
 	std::vector<UndoSnapshot> undoHistory = {};
 	int undoHistoryIndex = -1;
 	bool applyingUndoRedo = false;

@@ -2424,7 +2424,7 @@ void WorldEditor::drawWindow(gl2d::Renderer2D &renderer)
 		}
 
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
-		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
+		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor, F9 Entity Editor");
 		ImGui::TextUnformatted("` toggles back to gameplay");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
 		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
@@ -2601,6 +2601,11 @@ void WorldEditor::drawLevelFilesWindow(gl2d::Renderer2D &renderer)
 		}
 		ImGui::SameLine();
 		ImGui::RadioButton("World Editor", true);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Entity Editor", false))
+		{
+			requestEntityEditorMode = true;
+		}
 
 		ImGui::Separator();
 		if (worldDirty)

@@ -1,12 +1,15 @@
 #include "Gameplay.h"
 #include "gameLayer.h"
 
+#include "EntityData.h"
 #include "RoomIo.h"
 #include "easing.h"
 #include "imguiTools.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <glm/glm.hpp>
 namespace
 {
@@ -26,10 +29,27 @@ namespace
 	constexpr float kWallClimbVerticalPhase = 0.55f;
 	constexpr float kWallJumpReleaseGraceTime = 0.06f;
 	constexpr float kZiplineAttachDistance = 0.45f;
+	constexpr float kZiplineEndHandoffDistance = 0.50f;
 	constexpr float kZiplineDetachDelay = 0.12f;
 	constexpr float kZiplineCollisionInset = 0.5f;
 	constexpr float kPogoCircleTopSlipFactor = 0.90f;
 	constexpr float kPogoCircleTopSlipMinDistance = 0.08f;
+	constexpr float kAttackOutlineWidth = 0.08f;
+
+	enum AttackShapeType
+	{
+		attackShapeFront = 0,
+		attackShapeUp,
+		attackShapeDownAir,
+		attackShapeDownGround,
+		attackShapeWall,
+	};
+
+	struct ConvexShape
+	{
+		std::array<glm::vec2, maxEntityShapePoints> points = {};
+		int count = 0;
+	};
 
 	struct WallClimbTarget
 	{
@@ -54,6 +74,12 @@ namespace
 		ZiplineSlideData slide = {};
 	};
 
+	// The slash system uses authored convex polygons instead of rectangles so
+	// gameplay hit checks can stay close to the intended Hollow Knight-like arcs.
+	glm::vec4 getConvexShapeBounds(ConvexShape const &shape);
+	bool convexShapeOverlapsRect(ConvexShape const &shape, glm::vec4 rect);
+	bool convexShapeOverlapsCircle(ConvexShape const &shape, glm::vec2 center, float radius);
+
 	bool aabbOverlaps(glm::vec4 a, glm::vec4 b)
 	{
 		return
@@ -61,6 +87,79 @@ namespace
 			a.x + a.z > b.x &&
 			a.y < b.y + b.w &&
 			a.y + a.w > b.y;
+	}
+
+	float getLengthSquared(glm::vec2 v)
+	{
+		return glm::dot(v, v);
+	}
+
+	glm::vec2 getEdgeNormal(glm::vec2 a, glm::vec2 b)
+	{
+		glm::vec2 edge = b - a;
+		if (getLengthSquared(edge) <= 0.000001f)
+		{
+			return {};
+		}
+
+		return glm::normalize(glm::vec2{-edge.y, edge.x});
+	}
+
+	glm::vec2 closestPointOnSegment(glm::vec2 a, glm::vec2 b, glm::vec2 point)
+	{
+		glm::vec2 ab = b - a;
+		float lengthSquared = getLengthSquared(ab);
+		if (lengthSquared <= 0.000001f)
+		{
+			return a;
+		}
+
+		float t = glm::clamp(glm::dot(point - a, ab) / lengthSquared, 0.f, 1.f);
+		return a + ab * t;
+	}
+
+	void projectConvexShape(ConvexShape const &shape, glm::vec2 axis, float &minProjection, float &maxProjection)
+	{
+		minProjection = std::numeric_limits<float>::max();
+		maxProjection = -std::numeric_limits<float>::max();
+
+		for (int i = 0; i < shape.count; i++)
+		{
+			float projection = glm::dot(shape.points[i], axis);
+			minProjection = std::min(minProjection, projection);
+			maxProjection = std::max(maxProjection, projection);
+		}
+	}
+
+	void projectRect(glm::vec4 rect, glm::vec2 axis, float &minProjection, float &maxProjection)
+	{
+		glm::vec2 corners[4] = {
+			{rect.x, rect.y},
+			{rect.x + rect.z, rect.y},
+			{rect.x + rect.z, rect.y + rect.w},
+			{rect.x, rect.y + rect.w},
+		};
+
+		minProjection = std::numeric_limits<float>::max();
+		maxProjection = -std::numeric_limits<float>::max();
+		for (glm::vec2 const &corner : corners)
+		{
+			float projection = glm::dot(corner, axis);
+			minProjection = std::min(minProjection, projection);
+			maxProjection = std::max(maxProjection, projection);
+		}
+	}
+
+	void projectCircle(glm::vec2 center, float radius, glm::vec2 axis, float &minProjection, float &maxProjection)
+	{
+		float centerProjection = glm::dot(center, axis);
+		minProjection = centerProjection - radius;
+		maxProjection = centerProjection + radius;
+	}
+
+	bool projectionsOverlap(float minA, float maxA, float minB, float maxB)
+	{
+		return !(maxA < minB || maxB < minA);
 	}
 
 	float moveTowards(float current, float target, float maxDelta)
@@ -182,6 +281,103 @@ namespace
 		return false;
 	}
 
+	AttackShapeType getAttackShapeType(Player const &player)
+	{
+		if (player.attackStartedOnWall)
+		{
+			return attackShapeWall;
+		}
+
+		if (player.attackDirection.y < 0)
+		{
+			return attackShapeUp;
+		}
+
+		if (player.attackDirection.y > 0)
+		{
+			return player.attackStartedOnGround ? attackShapeDownGround : attackShapeDownAir;
+		}
+
+		return attackShapeFront;
+	}
+
+	EditableConvexShape const &getAttackShapeDefinition(EntityData const &entityData, AttackShapeType type)
+	{
+		switch (type)
+		{
+			case attackShapeUp:
+				return getPlayerAttackShape(entityData, playerAttackShapeUp);
+			case attackShapeDownAir:
+				return getPlayerAttackShape(entityData, playerAttackShapeDownAir);
+			case attackShapeDownGround:
+				return getPlayerAttackShape(entityData, playerAttackShapeDownGround);
+			case attackShapeWall:
+				return getPlayerAttackShape(entityData, playerAttackShapeWall);
+			case attackShapeFront:
+			default:
+				return getPlayerAttackShape(entityData, playerAttackShapeFront);
+		}
+	}
+
+	ConvexShape getAttackShapeWorld(EntityData const &entityData, Player const &player)
+	{
+		if (!player.attackActive)
+		{
+			return {};
+		}
+
+		EditableConvexShape const &sourceShape = getAttackShapeDefinition(entityData, getAttackShapeType(player));
+		if (sourceShape.points.empty())
+		{
+			return {};
+		}
+
+		ConvexShape worldShape = {};
+		worldShape.count = std::min(static_cast<int>(sourceShape.points.size()), static_cast<int>(worldShape.points.size()));
+		float mirror = player.attackFacing < 0 ? -1.f : 1.f;
+		for (int i = 0; i < worldShape.count; i++)
+		{
+			worldShape.points[i] = player.physics.transform.pos + glm::vec2{
+				sourceShape.points[i].x * mirror,
+				sourceShape.points[i].y
+			};
+		}
+
+		return worldShape;
+	}
+
+	bool roomConvexShapeHitsSolid(Room const &room, ConvexShape const &shape)
+	{
+		if (shape.count < 3)
+		{
+			return false;
+		}
+
+		glm::vec4 bounds = getConvexShapeBounds(shape);
+		int minX = std::max(static_cast<int>(std::floor(bounds.x)), 0);
+		int minY = std::max(static_cast<int>(std::floor(bounds.y)), 0);
+		int maxX = std::min(static_cast<int>(std::ceil(bounds.x + bounds.z)), room.size.x);
+		int maxY = std::min(static_cast<int>(std::ceil(bounds.y + bounds.w)), room.size.y);
+
+		for (int y = minY; y < maxY; y++)
+		{
+			for (int x = minX; x < maxX; x++)
+			{
+				if (!room.getBlockUnsafe(x, y).isSolid())
+				{
+					continue;
+				}
+
+				if (convexShapeOverlapsRect(shape, {static_cast<float>(x), static_cast<float>(y), 1.f, 1.f}))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
 	glm::vec4 getPlayerRectAtCenter(glm::vec2 center)
 	{
 		return {
@@ -203,12 +399,134 @@ namespace
 		return rect;
 	}
 
+	glm::vec4 getConvexShapeBounds(ConvexShape const &shape)
+	{
+		if (shape.count <= 0)
+		{
+			return {};
+		}
+
+		glm::vec2 minPoint = shape.points[0];
+		glm::vec2 maxPoint = shape.points[0];
+		for (int i = 1; i < shape.count; i++)
+		{
+			minPoint = glm::min(minPoint, shape.points[i]);
+			maxPoint = glm::max(maxPoint, shape.points[i]);
+		}
+
+		return {
+			minPoint.x,
+			minPoint.y,
+			maxPoint.x - minPoint.x,
+			maxPoint.y - minPoint.y
+		};
+	}
+
 	glm::vec2 closestPointOnRect(glm::vec2 point, glm::vec4 rect)
 	{
 		return {
 			std::clamp(point.x, rect.x, rect.x + rect.z),
 			std::clamp(point.y, rect.y, rect.y + rect.w)
 		};
+	}
+
+	bool convexShapeOverlapsRect(ConvexShape const &shape, glm::vec4 rect)
+	{
+		if (shape.count < 3)
+		{
+			return false;
+		}
+
+		auto testAxis = [&](glm::vec2 axis)
+		{
+			if (getLengthSquared(axis) <= 0.000001f)
+			{
+				return true;
+			}
+
+			axis = glm::normalize(axis);
+			float shapeMin = 0.f;
+			float shapeMax = 0.f;
+			float rectMin = 0.f;
+			float rectMax = 0.f;
+			projectConvexShape(shape, axis, shapeMin, shapeMax);
+			projectRect(rect, axis, rectMin, rectMax);
+			return projectionsOverlap(shapeMin, shapeMax, rectMin, rectMax);
+		};
+
+		for (int i = 0; i < shape.count; i++)
+		{
+			glm::vec2 a = shape.points[i];
+			glm::vec2 b = shape.points[(i + 1) % shape.count];
+			if (!testAxis(getEdgeNormal(a, b)))
+			{
+				return false;
+			}
+		}
+
+		if (!testAxis({1.f, 0.f}) || !testAxis({0.f, 1.f}))
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	bool convexShapeOverlapsCircle(ConvexShape const &shape, glm::vec2 center, float radius)
+	{
+		if (shape.count < 3)
+		{
+			return false;
+		}
+
+		auto testAxis = [&](glm::vec2 axis)
+		{
+			if (getLengthSquared(axis) <= 0.000001f)
+			{
+				return true;
+			}
+
+			axis = glm::normalize(axis);
+			float shapeMin = 0.f;
+			float shapeMax = 0.f;
+			float circleMin = 0.f;
+			float circleMax = 0.f;
+			projectConvexShape(shape, axis, shapeMin, shapeMax);
+			projectCircle(center, radius, axis, circleMin, circleMax);
+			return projectionsOverlap(shapeMin, shapeMax, circleMin, circleMax);
+		};
+
+		for (int i = 0; i < shape.count; i++)
+		{
+			glm::vec2 a = shape.points[i];
+			glm::vec2 b = shape.points[(i + 1) % shape.count];
+			if (!testAxis(getEdgeNormal(a, b)))
+			{
+				return false;
+			}
+		}
+
+		glm::vec2 closestPoint = shape.points[0];
+		float bestDistanceSquared = std::numeric_limits<float>::max();
+		for (int i = 0; i < shape.count; i++)
+		{
+			glm::vec2 a = shape.points[i];
+			glm::vec2 b = shape.points[(i + 1) % shape.count];
+			glm::vec2 candidate = closestPointOnSegment(a, b, center);
+			float distanceSquared = getLengthSquared(center - candidate);
+			if (distanceSquared < bestDistanceSquared)
+			{
+				bestDistanceSquared = distanceSquared;
+				closestPoint = candidate;
+			}
+		}
+
+		if (!testAxis(center - closestPoint))
+		{
+			return false;
+		}
+
+		return true;
 	}
 
 	bool pogoCircleOverlapsRect(PogoCircle const &pogoCircle, glm::vec4 rect)
@@ -426,7 +744,8 @@ namespace
 		return glm::dot(intendedDirection, slide.downhillDirection) >= 0.f ? 1 : -1;
 	}
 
-	bool findZiplineRideTarget(Player const &player, Room const &room, ZiplineRideTarget &target)
+	bool findZiplineRideTarget(Player const &player, Room const &room, ZiplineRideTarget &target,
+		float attachDistance = kZiplineAttachDistance, int ignoredZiplineIndex = -1)
 	{
 		glm::vec4 playerBounds = player.physics.transform.getAABB();
 		glm::vec2 feetSamples[3] = {
@@ -437,6 +756,11 @@ namespace
 
 		for (int i = 0; i < static_cast<int>(room.ziplines.size()); i++)
 		{
+			if (i == ignoredZiplineIndex)
+			{
+				continue;
+			}
+
 			ZiplineSlideData slide = {};
 			if (!getZiplineSlideData(room.ziplines[i], slide))
 			{
@@ -448,7 +772,7 @@ namespace
 				float param = getClosestPointParam(slide.uphillPoint, slide.downhillPoint, feetSample);
 				glm::vec2 linePoint = glm::mix(slide.uphillPoint, slide.downhillPoint, param);
 				float distanceToFeet = glm::distance(linePoint, feetSample);
-				if (distanceToFeet > kZiplineAttachDistance)
+				if (distanceToFeet > attachDistance)
 				{
 					continue;
 				}
@@ -484,6 +808,80 @@ namespace
 		}
 
 		return target.ziplineIndex >= 0;
+	}
+
+	bool findZiplineRideTargetNearPoint(glm::vec2 worldPoint, Room const &room, ZiplineRideTarget &target,
+		float attachDistance, int ignoredZiplineIndex = -1)
+	{
+		for (int i = 0; i < static_cast<int>(room.ziplines.size()); i++)
+		{
+			if (i == ignoredZiplineIndex)
+			{
+				continue;
+			}
+
+			ZiplineSlideData slide = {};
+			if (!getZiplineSlideData(room.ziplines[i], slide))
+			{
+				continue;
+			}
+
+			float param = getClosestPointParam(slide.uphillPoint, slide.downhillPoint, worldPoint);
+			glm::vec2 linePoint = glm::mix(slide.uphillPoint, slide.downhillPoint, param);
+			float distanceToPoint = glm::distance(linePoint, worldPoint);
+			if (distanceToPoint > attachDistance)
+			{
+				continue;
+			}
+
+			glm::vec2 rideCenter = {
+				linePoint.x,
+				linePoint.y - kPlayerHeight * 0.5f
+			};
+			glm::vec4 rideRect = getPlayerRectAtCenter(rideCenter);
+			if (roomRectHitsSolid(room, rideRect))
+			{
+				continue;
+			}
+
+			if (distanceToPoint < target.distanceToFeet)
+			{
+				target.ziplineIndex = i;
+				target.linePoint = linePoint;
+				target.distanceAlong = param * slide.length;
+				target.distanceToFeet = distanceToPoint;
+				target.slide = slide;
+			}
+		}
+
+		return target.ziplineIndex >= 0;
+	}
+
+	void attachPlayerToZipline(Player &player, ZiplineRideTarget const &target, float initialSpeed)
+	{
+		player.airDashAvailable = true;
+		player.ziplineActive = true;
+		player.ziplineIndex = target.ziplineIndex;
+		player.ziplineDistance = target.distanceAlong;
+		player.ziplineSpeed = initialSpeed;
+		player.ziplineDetachTimer = 0.f;
+		player.dashActive = false;
+		player.jumpQueuedAfterDash = false;
+		player.ziplineDashActive = false;
+		player.ziplineDashTimer = 0.f;
+		player.ziplineDashStartDistance = target.distanceAlong;
+		player.ziplineDashDirection = 1;
+		player.physics.transform.pos = {
+			target.linePoint.x,
+			target.linePoint.y - kPlayerHeight * 0.5f
+		};
+		player.physics.lastPosition = player.physics.transform.pos;
+		player.physics.velocity = {};
+		player.physics.acceleration = {};
+		player.physics.upTouch = false;
+		player.physics.downTouch = false;
+		player.physics.leftTouch = false;
+		player.physics.rightTouch = false;
 	}
 
 	bool findWallClimbTarget(Player const &player, Room const &room, int wallSide, WallClimbTarget &target)
@@ -600,6 +998,7 @@ void Gameplay::init()
 	*this = {};
 	std::string fontPath = std::string(RESOURCES_PATH) + "arial.ttf";
 	measureFont.createFromFile(fontPath.c_str());
+	reloadEntityData();
 
 	RoomFilesListing levelFiles = listRoomFiles();
 	if (!levelFiles.error.empty())
@@ -622,6 +1021,17 @@ void Gameplay::init()
 void Gameplay::cleanup()
 {
 	measureFont.cleanup();
+}
+
+void Gameplay::reloadEntityData()
+{
+	std::string message = {};
+	if (loadEntityData(entityData, &message))
+	{
+		return;
+	}
+
+	entityData = makeDefaultEntityData();
 }
 
 void Gameplay::update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer)
@@ -1007,6 +1417,11 @@ bool Gameplay::travelThroughDoor(Door const &door)
 
 glm::ivec2 Gameplay::getAttackDirection(float moveInput, bool upHeld, bool downHeld) const
 {
+	if (player.wallGrabSide != 0)
+	{
+		return {-player.wallGrabSide, 0};
+	}
+
 	if (upHeld)
 	{
 		return {0, -1};
@@ -1032,87 +1447,26 @@ glm::ivec2 Gameplay::getAttackDirection(float moveInput, bool upHeld, bool downH
 
 glm::vec4 Gameplay::getAttackRect() const
 {
-	glm::vec4 playerRect = player.physics.transform.getAABB();
-
-	if (!player.attackActive)
-	{
-		return {};
-	}
-
-	// The attack rectangles stay explicit and tile-sized so it is easy to tune
-	// and to later reuse them for enemies or breakable objects.
-	if (player.attackDirection.x != 0)
-	{
-		constexpr float attackWidth = 3.6f;
-		constexpr float attackHeight = 2.6f;
-		float rectY = playerRect.y + playerRect.w * 0.5f - attackHeight * 0.5f;
-		if (player.attackDirection.x > 0)
-		{
-			return {
-				playerRect.x + playerRect.z - 0.10f,
-				rectY,
-				attackWidth,
-				attackHeight
-			};
-		}
-
-		return {
-			playerRect.x - attackWidth + 0.10f,
-			rectY,
-			attackWidth,
-			attackHeight
-		};
-	}
-
-	if (player.attackDirection.y < 0)
-	{
-		constexpr float attackWidth = 2.8f;
-		constexpr float attackHeight = 3.6f;
-		return {
-			playerRect.x + playerRect.z * 0.5f - attackWidth * 0.5f,
-			playerRect.y - attackHeight + 0.10f,
-			attackWidth,
-			attackHeight
-		};
-	}
-
-	if (player.attackStartedOnGround)
-	{
-		constexpr float attackWidth = 2.2f;
-		constexpr float attackHeight = 1.2f;
-		return {
-			playerRect.x + playerRect.z * 0.5f - attackWidth * 0.5f,
-			playerRect.y + playerRect.w - 0.05f,
-			attackWidth,
-			attackHeight
-		};
-	}
-
-	constexpr float attackWidth = 2.8f;
-	constexpr float attackHeight = 3.6f;
-	return {
-		playerRect.x + playerRect.z * 0.5f - attackWidth * 0.5f,
-		playerRect.y + playerRect.w - 0.10f,
-		attackWidth,
-		attackHeight
-	};
+	return getConvexShapeBounds(getAttackShapeWorld(entityData, player));
 }
 
 void Gameplay::startAttack(glm::ivec2 direction, bool grounded)
 {
 	player.attackActive = true;
 	player.attackDirection = direction;
+	player.attackFacing = direction.x != 0 ? direction.x : (player.lastMoveDirection == 0 ? 1 : player.lastMoveDirection);
 	player.attackTimer = kAttackDuration;
 	player.attackCooldownTimer = tuning.attackCooldownTime;
 	player.attackStartedOnGround = grounded;
+	player.attackStartedOnWall = player.wallGrabSide != 0;
 	player.attackPogoConsumed = false;
 
 	// Grounded side slashes nudge the player a little off the wall if the swing
 	// immediately collides, so tight hallway attacks do not feel completely static.
 	if (grounded && direction.x != 0)
 	{
-		glm::vec4 attackRect = getAttackRect();
-		if (roomRectHitsSolid(room, attackRect))
+		ConvexShape attackShape = getAttackShapeWorld(entityData, player);
+		if (roomConvexShapeHitsSolid(room, attackShape))
 		{
 			player.physics.transform.pos.x -= direction.x * kGroundAttackWallPushDistance;
 		}
@@ -1126,15 +1480,15 @@ bool Gameplay::tryStartPogoBounce(float pogoJumpSpeed)
 		return false;
 	}
 
-	glm::vec4 attackRect = getAttackRect();
-	if (attackRect.z <= 0.f || attackRect.w <= 0.f)
+	ConvexShape attackShape = getAttackShapeWorld(entityData, player);
+	if (attackShape.count < 3)
 	{
 		return false;
 	}
 
 	for (PogoCircle const &pogoCircle : room.pogoCircles)
 	{
-		if (!pogoCircleOverlapsRect(pogoCircle, attackRect))
+		if (!convexShapeOverlapsCircle(attackShape, pogoCircle.center, pogoCircle.radius))
 		{
 			continue;
 		}
@@ -1468,10 +1822,7 @@ bool Gameplay::tryStartZiplineRide()
 
 	// Riding a zipline becomes its own scripted state so it can ignore left/right
 	// input and move only from the projected downhill gravity.
-	player.ziplineActive = true;
-	player.ziplineIndex = target.ziplineIndex;
-	player.ziplineDistance = target.distanceAlong;
-	player.ziplineSpeed = std::clamp(
+	float initialZiplineSpeed = std::clamp(
 		std::max(0.f, glm::dot(incomingVelocity, target.slide.downhillDirection)),
 		0.f,
 		tuning.ziplineMaxSpeed);
@@ -1483,25 +1834,8 @@ bool Gameplay::tryStartZiplineRide()
 	player.wallJumpCarryVelocity = 0.f;
 	// Ziplines count like a fresh footing for dash recovery, even though the
 	// player still can't start a dash until they leave the ride again.
-	player.airDashAvailable = true;
 	player.glideArmedFromDoubleJump = false;
-	player.dashActive = false;
-	player.jumpQueuedAfterDash = false;
-	player.ziplineDashActive = false;
-	player.ziplineDashTimer = 0.f;
-	player.ziplineDashStartDistance = target.distanceAlong;
-	player.ziplineDashDirection = 1;
-	player.physics.transform.pos = {
-		target.linePoint.x,
-		target.linePoint.y - kPlayerHeight * 0.5f
-	};
-	player.physics.lastPosition = player.physics.transform.pos;
-	player.physics.velocity = {};
-	player.physics.acceleration = {};
-	player.physics.upTouch = false;
-	player.physics.downTouch = false;
-	player.physics.leftTouch = false;
-	player.physics.rightTouch = false;
+	attachPlayerToZipline(player, target, initialZiplineSpeed);
 	return true;
 }
 
@@ -1697,6 +2031,26 @@ bool Gameplay::updateZiplineRide(float deltaTime, bool jumpPressed, bool downPre
 	if (player.ziplineDistance >= slide.length)
 	{
 		glm::vec2 exitPoint = slide.downhillPoint;
+		ZiplineRideTarget handoffTarget = {};
+		if (findZiplineRideTargetNearPoint(
+			exitPoint,
+			room,
+			handoffTarget,
+			kZiplineEndHandoffDistance,
+			player.ziplineIndex))
+		{
+			glm::vec2 carriedMomentum = slide.downhillDirection * player.ziplineSpeed;
+			float handoffSpeed = std::clamp(
+				std::max(0.f, glm::dot(carriedMomentum, handoffTarget.slide.downhillDirection)),
+				0.f,
+				tuning.ziplineMaxSpeed);
+
+			// Reaching the end of one rail should gently hand off into the next
+			// nearby rail so chained ziplines don't require a perfectly exact seam.
+			attachPlayerToZipline(player, handoffTarget, handoffSpeed);
+			return true;
+		}
+
 		detachFromZipline(exitPoint, true);
 		return false;
 	}
@@ -2366,7 +2720,8 @@ void Gameplay::updatePlayer(float deltaTime, float moveInput, bool upHeld, bool 
 
 	// Horizontal input stays direct, but scripted carries such as zipline jump
 	// momentum get one small physics window with drag before fading out.
-	player.physics.updateForces(deltaTime, {tuning.jumpCarryVelocityDrag, 0.f});
+	float jumpCarryDrag = tuning.jumpCarryVelocityDrag * (grounded ? 2.f : 1.f);
+	player.physics.updateForces(deltaTime, {jumpCarryDrag, 0.f});
 	player.physics.resolveConstrains(room);
 	touchingPogoCircle = resolvePogoCircleCollisions(player, room);
 	float minPlayerX = player.physics.transform.w * 0.5f;
@@ -2566,24 +2921,28 @@ void Gameplay::drawAttack(gl2d::Renderer2D &renderer)
 		return;
 	}
 
-	glm::vec4 attackRect = getAttackRect();
-	if (attackRect.z <= 0.f || attackRect.w <= 0.f)
+	ConvexShape attackShape = getAttackShapeWorld(entityData, player);
+	if (attackShape.count < 3)
 	{
 		return;
 	}
 
-	gl2d::Color4f attackColor = {1.0f, 0.94f, 0.78f, 0.22f};
+	gl2d::Color4f attackColor = {1.0f, 0.98f, 0.88f, 0.92f};
 	if (player.attackDirection.y < 0)
 	{
-		attackColor = {0.92f, 0.96f, 1.0f, 0.24f};
+		attackColor = {0.92f, 0.96f, 1.0f, 0.92f};
 	}
 	else if (player.attackDirection.y > 0)
 	{
-		attackColor = {1.0f, 0.88f, 0.70f, 0.24f};
+		attackColor = {1.0f, 0.88f, 0.70f, 0.92f};
 	}
 
-	renderer.renderRectangle(attackRect, attackColor);
-	renderer.renderRectangleOutline(attackRect, {1.0f, 0.98f, 0.88f, 0.92f}, 0.08f);
+	for (int i = 0; i < attackShape.count; i++)
+	{
+		glm::vec2 a = attackShape.points[i];
+		glm::vec2 b = attackShape.points[(i + 1) % attackShape.count];
+		renderer.renderLine(a, b, attackColor, kAttackOutlineWidth);
+	}
 }
 
 void Gameplay::drawMeasureOverlay(gl2d::Renderer2D &renderer)
@@ -2650,7 +3009,7 @@ void Gameplay::drawDebugWindow()
 	if (ImGui::Begin("Editor"))
 	{
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
-		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
+		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor, F9 Entity Editor");
 		ImGui::TextUnformatted("` toggles between gameplay and the last editor mode");
 		ImGui::TextUnformatted("X attacks, hold Up / Down to aim the slash");
 		ImGui::TextUnformatted("Downslash a pogo circle to bounce back up");
@@ -2853,6 +3212,11 @@ void Gameplay::drawLevelFilesWindow()
 		if (ImGui::RadioButton("World Editor", false))
 		{
 			requestWorldEditorMode = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Entity Editor", false))
+		{
+			requestEntityEditorMode = true;
 		}
 
 		ImGui::Separator();

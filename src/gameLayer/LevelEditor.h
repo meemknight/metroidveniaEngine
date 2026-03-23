@@ -70,9 +70,35 @@ struct LevelEditor
 	};
 
 	// Move and copy both keep a detached snapshot of the selected blocks and
-	// only write it back on Enter.
+	// only write it back on Enter. Move also remembers intersecting room entities
+	// so a dragged block selection can carry authored markers along with it.
 	struct MoveSelection
 	{
+		struct DoorMove
+		{
+			int index = -1;
+			Door door = {};
+		};
+
+		struct PogoCircleMove
+		{
+			int index = -1;
+			PogoCircle pogoCircle = {};
+		};
+
+		struct SpawnRegionMove
+		{
+			int index = -1;
+			SpawnRegion spawnRegion = {};
+		};
+
+		struct ZiplineMove
+		{
+			int index = -1;
+			Zipline zipline = {};
+			bool movePoint[2] = {};
+		};
+
 		bool active = false;
 		bool previewActive = false;
 		bool dragging = false;
@@ -81,6 +107,10 @@ struct LevelEditor
 		glm::ivec2 previewPosition = {};
 		glm::ivec2 dragGrabOffset = {};
 		std::vector<BlockType> blockTypes = {};
+		std::vector<DoorMove> doors = {};
+		std::vector<PogoCircleMove> pogoCircles = {};
+		std::vector<SpawnRegionMove> spawnRegions = {};
+		std::vector<ZiplineMove> ziplines = {};
 	};
 
 	void init();
@@ -236,6 +266,7 @@ struct LevelEditor
 	bool pendingReloadCurrentLevel = false;
 	bool requestGameplayMode = false;
 	bool requestWorldEditorMode = false;
+	bool requestEntityEditorMode = false;
 	char newLevelName[128] = {};
 	char renameName[128] = {};
 	char selectedDoorName[128] = {};

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "EntityData.h"
 #include "player.h"
 #include "room.h"
 #include "WorldIo.h"
@@ -64,6 +65,7 @@ struct Gameplay
 	void init();
 	void cleanup();
 	void update(float deltaTime, platform::Input &input, gl2d::Renderer2D &renderer);
+	void reloadEntityData();
 
 	void fillSolidRect(int minX, int minY, int maxX, int maxY);
 	void respawnPlayer();
@@ -139,4 +141,6 @@ struct Gameplay
 	std::string blockedDoorName = {};
 	bool requestLevelEditorMode = false;
 	bool requestWorldEditorMode = false;
+	bool requestEntityEditorMode = false;
+	EntityData entityData = {};
 };

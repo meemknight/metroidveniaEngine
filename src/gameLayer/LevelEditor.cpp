@@ -85,6 +85,45 @@ namespace
 		return rect;
 	}
 
+	glm::vec4 makeSelectionRect(glm::ivec2 start, glm::ivec2 size)
+	{
+		return {
+			static_cast<float>(start.x),
+			static_cast<float>(start.y),
+			static_cast<float>(size.x),
+			static_cast<float>(size.y)
+		};
+	}
+
+	bool rectsOverlap(glm::vec4 a, glm::vec4 b)
+	{
+		return
+			a.x < b.x + b.z &&
+			a.y < b.y + b.w &&
+			a.x + a.z > b.x &&
+			a.y + a.w > b.y;
+	}
+
+	bool selectionContainsTile(glm::ivec2 selectionStart, glm::ivec2 selectionSize, glm::ivec2 tile)
+	{
+		return
+			tile.x >= selectionStart.x &&
+			tile.y >= selectionStart.y &&
+			tile.x < selectionStart.x + selectionSize.x &&
+			tile.y < selectionStart.y + selectionSize.y;
+	}
+
+	bool selectionIntersectsCircle(glm::vec4 selectionRect, glm::vec2 center, float radius)
+	{
+		glm::vec2 closestPoint = {
+			std::clamp(center.x, selectionRect.x, selectionRect.x + selectionRect.z),
+			std::clamp(center.y, selectionRect.y, selectionRect.y + selectionRect.w)
+		};
+		glm::vec2 delta = closestPoint - center;
+
+		return glm::dot(delta, delta) <= radius * radius;
+	}
+
 	bool roomHasDoorNamed(Room const &room, std::string const &doorName)
 	{
 		for (Door const &door : room.doors)
@@ -1606,6 +1645,7 @@ void LevelEditor::createMoveSelection(Room &room, glm::ivec2 a, glm::ivec2 b)
 	moveSelection.size = {maxX - minX + 1, maxY - minY + 1};
 	moveSelection.previewPosition = moveSelection.sourceStart;
 	moveSelection.blockTypes.resize(moveSelection.size.x * moveSelection.size.y, emptyBlock);
+	glm::vec4 selectionRect = makeSelectionRect(moveSelection.sourceStart, moveSelection.size);
 
 	for (int y = 0; y < moveSelection.size.y; y++)
 	{
@@ -1618,6 +1658,73 @@ void LevelEditor::createMoveSelection(Room &room, glm::ivec2 a, glm::ivec2 b)
 			}
 
 			moveSelection.blockTypes[x + y * moveSelection.size.x] = block->type;
+		}
+	}
+
+	if (tool != moveTool)
+	{
+		return;
+	}
+
+	// Move selections can also pick up authored room markers so rearranging a
+	// chunk of level geometry can carry its related entities with it.
+	for (int doorIndex = 0; doorIndex < static_cast<int>(room.doors.size()); doorIndex++)
+	{
+		Door const &door = room.doors[doorIndex];
+		if (rectsOverlap(selectionRect, door.getRectF()) ||
+			rectsOverlap(selectionRect, door.getPlayerSpawnRectF()))
+		{
+			moveSelection.doors.push_back({doorIndex, door});
+		}
+	}
+
+	for (int pogoCircleIndex = 0; pogoCircleIndex < static_cast<int>(room.pogoCircles.size()); pogoCircleIndex++)
+	{
+		PogoCircle const &pogoCircle = room.pogoCircles[pogoCircleIndex];
+		if (selectionIntersectsCircle(selectionRect, pogoCircle.center, pogoCircle.radius))
+		{
+			moveSelection.pogoCircles.push_back({pogoCircleIndex, pogoCircle});
+		}
+	}
+
+	for (int spawnRegionIndex = 0; spawnRegionIndex < static_cast<int>(room.spawnRegions.size()); spawnRegionIndex++)
+	{
+		SpawnRegion const &spawnRegion = room.spawnRegions[spawnRegionIndex];
+		bool intersectsRegion = rectsOverlap(selectionRect, spawnRegion.getSpawnRectF());
+
+		for (SpawnRegionRect const &rect : spawnRegion.rects)
+		{
+			if (rectsOverlap(selectionRect, rect.getRectF()))
+			{
+				intersectsRegion = true;
+				break;
+			}
+		}
+
+		if (intersectsRegion)
+		{
+			moveSelection.spawnRegions.push_back({spawnRegionIndex, spawnRegion});
+		}
+	}
+
+	for (int ziplineIndex = 0; ziplineIndex < static_cast<int>(room.ziplines.size()); ziplineIndex++)
+	{
+		Zipline const &zipline = room.ziplines[ziplineIndex];
+		MoveSelection::ZiplineMove ziplineMove = {};
+		ziplineMove.index = ziplineIndex;
+		ziplineMove.zipline = zipline;
+
+		for (int pointIndex = 0; pointIndex < 2; pointIndex++)
+		{
+			if (selectionContainsTile(moveSelection.sourceStart, moveSelection.size, zipline.points[pointIndex]))
+			{
+				ziplineMove.movePoint[pointIndex] = true;
+			}
+		}
+
+		if (ziplineMove.movePoint[0] || ziplineMove.movePoint[1])
+		{
+			moveSelection.ziplines.push_back(ziplineMove);
 		}
 	}
 }
@@ -1665,6 +1772,9 @@ void LevelEditor::commitMoveSelection(Room &room, bool copyOnly)
 	};
 
 	std::vector<Placement> placements = {};
+	glm::ivec2 moveDelta = moveSelection.previewPosition - moveSelection.sourceStart;
+	bool movedEntities = false;
+	bool hasEntityDelta = moveDelta != glm::ivec2(0, 0);
 
 	for (int y = 0; y < moveSelection.size.y; y++)
 	{
@@ -1701,6 +1811,115 @@ void LevelEditor::commitMoveSelection(Room &room, bool copyOnly)
 
 	if (!copyOnly)
 	{
+		for (auto const &doorMove : moveSelection.doors)
+		{
+			if (!hasEntityDelta)
+			{
+				break;
+			}
+
+			if (doorMove.index < 0 || doorMove.index >= static_cast<int>(room.doors.size()))
+			{
+				continue;
+			}
+
+			Door movedDoor = doorMove.door;
+			movedDoor.position += moveDelta;
+			movedDoor.playerSpawnPosition += moveDelta;
+			clampDoorToRoom(movedDoor, room);
+			room.doors[doorMove.index] = movedDoor;
+			movedEntities = true;
+		}
+
+		for (auto const &pogoCircleMove : moveSelection.pogoCircles)
+		{
+			if (!hasEntityDelta)
+			{
+				break;
+			}
+
+			if (pogoCircleMove.index < 0 || pogoCircleMove.index >= static_cast<int>(room.pogoCircles.size()))
+			{
+				continue;
+			}
+
+			PogoCircle movedPogoCircle = pogoCircleMove.pogoCircle;
+			movedPogoCircle.center += glm::vec2(moveDelta);
+			movedPogoCircle.center.x = std::clamp(movedPogoCircle.center.x, 0.f, static_cast<float>(room.size.x));
+			movedPogoCircle.center.y = std::clamp(movedPogoCircle.center.y, 0.f, static_cast<float>(room.size.y));
+			room.pogoCircles[pogoCircleMove.index] = movedPogoCircle;
+			movedEntities = true;
+		}
+
+		for (auto const &spawnRegionMove : moveSelection.spawnRegions)
+		{
+			if (!hasEntityDelta)
+			{
+				break;
+			}
+
+			if (spawnRegionMove.index < 0 || spawnRegionMove.index >= static_cast<int>(room.spawnRegions.size()))
+			{
+				continue;
+			}
+
+			SpawnRegion movedSpawnRegion = spawnRegionMove.spawnRegion;
+			int minX = movedSpawnRegion.spawnPosition.x;
+			int minY = movedSpawnRegion.spawnPosition.y;
+			int maxX = movedSpawnRegion.spawnPosition.x;
+			int maxY = movedSpawnRegion.spawnPosition.y;
+
+			for (SpawnRegionRect const &rect : movedSpawnRegion.rects)
+			{
+				minX = std::min(minX, rect.position.x);
+				minY = std::min(minY, rect.position.y);
+				maxX = std::max(maxX, rect.position.x + rect.size.x - 1);
+				maxY = std::max(maxY, rect.position.y + rect.size.y - 1);
+			}
+
+			glm::ivec2 clampedDelta = moveDelta;
+			clampedDelta.x = std::clamp(clampedDelta.x, -minX, std::max(room.size.x - 1 - maxX, -minX));
+			clampedDelta.y = std::clamp(clampedDelta.y, -minY, std::max(room.size.y - 1 - maxY, -minY));
+
+			for (SpawnRegionRect &rect : movedSpawnRegion.rects)
+			{
+				rect.position += clampedDelta;
+			}
+			movedSpawnRegion.spawnPosition += clampedDelta;
+			room.spawnRegions[spawnRegionMove.index] = movedSpawnRegion;
+			movedEntities = true;
+		}
+
+		for (auto const &ziplineMove : moveSelection.ziplines)
+		{
+			if (!hasEntityDelta)
+			{
+				break;
+			}
+
+			if (ziplineMove.index < 0 || ziplineMove.index >= static_cast<int>(room.ziplines.size()))
+			{
+				continue;
+			}
+
+			Zipline movedZipline = ziplineMove.zipline;
+			for (int pointIndex = 0; pointIndex < 2; pointIndex++)
+			{
+				if (!ziplineMove.movePoint[pointIndex])
+				{
+					continue;
+				}
+
+				glm::ivec2 movedPoint = movedZipline.points[pointIndex] + moveDelta;
+				movedPoint.x = std::clamp(movedPoint.x, 0, std::max(room.size.x - 1, 0));
+				movedPoint.y = std::clamp(movedPoint.y, 0, std::max(room.size.y - 1, 0));
+				movedZipline.points[pointIndex] = movedPoint;
+			}
+
+			room.ziplines[ziplineMove.index] = movedZipline;
+			movedEntities = true;
+		}
+
 		for (Placement const &placement : placements)
 		{
 			if (!containsDestination(placement.source))
@@ -1713,6 +1932,11 @@ void LevelEditor::commitMoveSelection(Room &room, bool copyOnly)
 	for (Placement const &placement : placements)
 	{
 		setBlock(room, placement.destination.x, placement.destination.y, placement.type);
+	}
+
+	if (movedEntities)
+	{
+		levelDirty = true;
 	}
 
 	doorActionHasError = false;
@@ -3128,6 +3352,131 @@ void LevelEditor::drawMoveSelection(gl2d::Renderer2D &renderer)
 						: solidPreviewFillColor);
 		}
 	}
+
+	if (tool != moveTool)
+	{
+		return;
+	}
+
+	glm::ivec2 moveDelta = moveSelection.previewPosition - moveSelection.sourceStart;
+	gl2d::Color4f entityPreviewFillColor = {previewOutlineColor.r, previewOutlineColor.g, previewOutlineColor.b, 0.16f};
+	gl2d::Color4f entityPreviewPointFillColor = {previewOutlineColor.r, previewOutlineColor.g, previewOutlineColor.b, 0.26f};
+
+	for (auto const &doorMove : moveSelection.doors)
+	{
+		Door previewDoor = doorMove.door;
+		previewDoor.position += moveDelta;
+		previewDoor.playerSpawnPosition += moveDelta;
+
+		renderer.renderRectangle(previewDoor.getRectF(), entityPreviewFillColor);
+		renderer.renderRectangleOutline(previewDoor.getRectF(), previewOutlineColor, 0.10f);
+		renderer.renderLine(
+			glm::vec2(previewDoor.position) + glm::vec2(previewDoor.size) * 0.5f,
+			glm::vec2(previewDoor.playerSpawnPosition) + glm::vec2(0.5f, 0.5f),
+			previewOutlineColor,
+			0.08f);
+		renderer.renderRectangle(previewDoor.getPlayerSpawnRectF(), entityPreviewPointFillColor);
+		renderer.renderRectangleOutline(previewDoor.getPlayerSpawnRectF(), previewOutlineColor, 0.08f);
+	}
+
+	for (auto const &pogoCircleMove : moveSelection.pogoCircles)
+	{
+		PogoCircle previewPogoCircle = pogoCircleMove.pogoCircle;
+		previewPogoCircle.center += glm::vec2(moveDelta);
+
+		renderer.renderCircleOutline(
+			previewPogoCircle.center,
+			previewPogoCircle.radius,
+			previewOutlineColor,
+			0.10f,
+			32);
+		renderer.renderCircleOutline(
+			previewPogoCircle.center,
+			std::max(previewPogoCircle.radius - 0.08f, 0.06f),
+			entityPreviewFillColor,
+			0.14f,
+			32);
+		renderer.renderRectangle(
+			{
+				previewPogoCircle.center.x - kPogoCircleHandleSize * 0.5f,
+				previewPogoCircle.center.y - kPogoCircleHandleSize * 0.5f,
+				kPogoCircleHandleSize,
+				kPogoCircleHandleSize
+			},
+			previewOutlineColor);
+	}
+
+	for (auto const &spawnRegionMove : moveSelection.spawnRegions)
+	{
+		SpawnRegion previewSpawnRegion = spawnRegionMove.spawnRegion;
+		glm::vec2 previewSpawnCenter = glm::vec2(previewSpawnRegion.spawnPosition + moveDelta) + glm::vec2(0.5f, 0.5f);
+
+		for (SpawnRegionRect const &rect : previewSpawnRegion.rects)
+		{
+			glm::vec4 previewRect = {
+				static_cast<float>(rect.position.x + moveDelta.x),
+				static_cast<float>(rect.position.y + moveDelta.y),
+				static_cast<float>(rect.size.x),
+				static_cast<float>(rect.size.y)
+			};
+
+			renderer.renderRectangle(previewRect, entityPreviewFillColor);
+			renderer.renderRectangleOutline(previewRect, previewOutlineColor, 0.08f);
+			renderer.renderLine(
+				previewSpawnCenter,
+				glm::vec2(rect.position + moveDelta) + glm::vec2(rect.size) * 0.5f,
+				previewOutlineColor,
+				0.06f);
+		}
+
+		renderer.renderRectangle(
+			{
+				static_cast<float>(previewSpawnRegion.spawnPosition.x + moveDelta.x),
+				static_cast<float>(previewSpawnRegion.spawnPosition.y + moveDelta.y),
+				1.f,
+				1.f
+			},
+			entityPreviewPointFillColor);
+		renderer.renderRectangleOutline(
+			{
+				static_cast<float>(previewSpawnRegion.spawnPosition.x + moveDelta.x),
+				static_cast<float>(previewSpawnRegion.spawnPosition.y + moveDelta.y),
+				1.f,
+				1.f
+			},
+			previewOutlineColor,
+			0.08f);
+	}
+
+	for (auto const &ziplineMove : moveSelection.ziplines)
+	{
+		Zipline previewZipline = ziplineMove.zipline;
+		for (int pointIndex = 0; pointIndex < 2; pointIndex++)
+		{
+			if (ziplineMove.movePoint[pointIndex])
+			{
+				previewZipline.points[pointIndex] += moveDelta;
+			}
+		}
+
+		renderer.renderLine(
+			previewZipline.getPointCenter(0),
+			previewZipline.getPointCenter(1),
+			previewOutlineColor,
+			kZiplineLineWidth * 1.35f);
+
+		for (int pointIndex = 0; pointIndex < 2; pointIndex++)
+		{
+			glm::vec2 pointMin = glm::vec2(previewZipline.points[pointIndex]) + glm::vec2(0.5f - kZiplinePointSize * 0.5f);
+			renderer.renderRectangle(
+				{pointMin.x, pointMin.y, kZiplinePointSize, kZiplinePointSize},
+				entityPreviewPointFillColor);
+			renderer.renderRectangleOutline(
+				{pointMin.x, pointMin.y, kZiplinePointSize, kZiplinePointSize},
+				previewOutlineColor,
+				0.08f);
+		}
+	}
 }
 
 void LevelEditor::drawRectPreview(gl2d::Renderer2D &renderer)
@@ -3258,7 +3607,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 			selectedZiplineIndex < static_cast<int>(room.ziplines.size());
 
 		ImGui::TextUnformatted("F10 hides / shows ImGui");
-		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor");
+		ImGui::TextUnformatted("F6 Game, F7 Level Editor, F8 World Editor, F9 Entity Editor");
 		ImGui::TextUnformatted("` toggles back to gameplay");
 		ImGui::TextUnformatted("WASD / Arrows move camera, Q/E zoom");
 		ImGui::TextUnformatted("Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
@@ -3324,7 +3673,7 @@ void LevelEditor::drawWindow(Room &room, gl2d::Renderer2D &renderer)
 		}
 		else if (tool == moveTool)
 		{
-			ImGui::TextUnformatted("Drag to select blocks, Ctrl+drag selection to move, Enter places, Escape cancels");
+			ImGui::TextUnformatted("Drag to select blocks and intersecting entities, Ctrl+drag selection to move, Enter places, Escape cancels");
 			if (moveSelection.active)
 			{
 				ImGui::Text("Selection: %d x %d", moveSelection.size.x, moveSelection.size.y);
@@ -4338,6 +4687,11 @@ void LevelEditor::drawLevelFilesWindow(Room &room, gl2d::Renderer2D &renderer)
 		if (ImGui::RadioButton("World Editor", false))
 		{
 			requestWorldEditorMode = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Entity Editor", false))
+		{
+			requestEntityEditorMode = true;
 		}
 
 		ImGui::Separator();

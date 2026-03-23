@@ -29,9 +29,11 @@ struct Player
 	// gameplay code can render and test a live hitbox without an enemy system yet.
 	bool attackActive = false;
 	glm::ivec2 attackDirection = {1, 0};
+	int attackFacing = 1;
 	float attackTimer = 0.f;
 	float attackCooldownTimer = 0.f;
 	bool attackStartedOnGround = false;
+	bool attackStartedOnWall = false;
 	bool attackPogoConsumed = false;
 	// Pogo bounces should keep their full scripted lift even if jump is not held.
 	bool pogoBounceActive = false;

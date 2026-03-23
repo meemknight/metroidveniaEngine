@@ -1,4 +1,5 @@
 #include "gameLayer.h"
+#include "EntityEditor.h"
 #include "GameRenderWindow.h"
 #include "Gameplay.h"
 #include "LevelEditor.h"
@@ -20,6 +21,7 @@ namespace
 		gameplayMode = 0,
 		levelEditorMode,
 		worldEditorMode,
+		entityEditorMode,
 	};
 
 	struct LevelEditorResumeState
@@ -40,19 +42,33 @@ namespace
 		std::string selectedLevelName = {};
 	};
 
+	struct EntityEditorResumeState
+	{
+		bool valid = false;
+		gl2d::Camera camera = {};
+		float cameraZoom = 24.f;
+		bool cameraInitialized = false;
+		int selectedEntity = 0;
+		int selectedShape = playerAttackShapeFront;
+		int selectedPoint = -1;
+	};
+
 	Gameplay gameplay;
 	LevelEditor levelEditor;
 	WorldEditor worldEditor;
+	EntityEditor entityEditor;
 	GameRenderWindow gameRenderWindow;
 	int runtimeMode = gameplayMode;
 	int lastEditorMode = levelEditorMode;
 	int syncedGameplayLevelLoadRevision = -1;
 	bool levelEditorLoaded = false;
 	bool worldEditorLoaded = false;
+	bool entityEditorLoaded = false;
 	int pendingModeSwitchTarget = -1;
 	int queuedModeSwitchTarget = -1;
 	LevelEditorResumeState levelEditorResumeState = {};
 	WorldEditorResumeState worldEditorResumeState = {};
+	EntityEditorResumeState entityEditorResumeState = {};
 
 	void clearModeRequests();
 	void syncLevelFileNamesFromGameplayToEditor();
@@ -62,8 +78,11 @@ namespace
 	void saveWorldEditorResumeState();
 	void unloadLevelEditor();
 	void unloadWorldEditor();
+	void saveEntityEditorResumeState();
+	void unloadEntityEditor();
 	void prepareLevelEditorForEnter();
 	void prepareWorldEditorForEnter();
+	void prepareEntityEditorForEnter();
 	char const *getRuntimeModeName(int mode);
 	void switchToMode(int newMode);
 	void requestModeSwitch(int newMode);
@@ -77,11 +96,17 @@ namespace
 	{
 		gameplay.requestLevelEditorMode = false;
 		gameplay.requestWorldEditorMode = false;
+		gameplay.requestEntityEditorMode = false;
 		levelEditor.requestGameplayMode = false;
 		levelEditor.requestWorldEditorMode = false;
+		levelEditor.requestEntityEditorMode = false;
 		worldEditor.requestGameplayMode = false;
 		worldEditor.requestLevelEditorMode = false;
 		worldEditor.requestLoadedLevelEditorMode = false;
+		worldEditor.requestEntityEditorMode = false;
+		entityEditor.requestGameplayMode = false;
+		entityEditor.requestLevelEditorMode = false;
+		entityEditor.requestWorldEditorMode = false;
 	}
 
 	void syncLevelFileNamesFromGameplayToEditor()
@@ -142,6 +167,22 @@ namespace
 		worldEditorResumeState.selectedLevelName = worldEditor.selectedLevelName;
 	}
 
+	void saveEntityEditorResumeState()
+	{
+		if (!entityEditorLoaded)
+		{
+			return;
+		}
+
+		entityEditorResumeState.valid = true;
+		entityEditorResumeState.camera = entityEditor.camera;
+		entityEditorResumeState.cameraZoom = entityEditor.tuning.cameraZoom;
+		entityEditorResumeState.cameraInitialized = entityEditor.cameraInitialized;
+		entityEditorResumeState.selectedEntity = entityEditor.selectedEntity;
+		entityEditorResumeState.selectedShape = entityEditor.selectedShape;
+		entityEditorResumeState.selectedPoint = entityEditor.selectedPoint;
+	}
+
 	void unloadLevelEditor()
 	{
 		if (!levelEditorLoaded)
@@ -166,6 +207,19 @@ namespace
 		worldEditor.cleanup();
 		worldEditor = {};
 		worldEditorLoaded = false;
+	}
+
+	void unloadEntityEditor()
+	{
+		if (!entityEditorLoaded)
+		{
+			return;
+		}
+
+		saveEntityEditorResumeState();
+		entityEditor.cleanup();
+		entityEditor = {};
+		entityEditorLoaded = false;
 	}
 
 	void prepareLevelEditorForEnter()
@@ -215,6 +269,23 @@ namespace
 		}
 	}
 
+	void prepareEntityEditorForEnter()
+	{
+		entityEditor.init();
+		entityEditorLoaded = true;
+
+		if (entityEditorResumeState.valid)
+		{
+			entityEditor.camera = entityEditorResumeState.camera;
+			entityEditor.tuning.cameraZoom = entityEditorResumeState.cameraZoom;
+			entityEditor.cameraInitialized = entityEditorResumeState.cameraInitialized;
+			entityEditor.selectedEntity = entityEditorResumeState.selectedEntity;
+			entityEditor.selectedShape = entityEditorResumeState.selectedShape;
+			entityEditor.selectedPoint = entityEditorResumeState.selectedPoint;
+			entityEditor.clampSelection();
+		}
+	}
+
 	char const *getRuntimeModeName(int mode)
 	{
 		switch (mode)
@@ -222,6 +293,7 @@ namespace
 			case gameplayMode: return "Game";
 			case levelEditorMode: return "Level Editor";
 			case worldEditorMode: return "World Editor";
+			case entityEditorMode: return "Entity Editor";
 			default: return "Unknown";
 		}
 	}
@@ -250,6 +322,11 @@ namespace
 			syncLevelSelectionFromWorldEditor();
 			unloadWorldEditor();
 		}
+		else if (runtimeMode == entityEditorMode)
+		{
+			lastEditorMode = entityEditorMode;
+			unloadEntityEditor();
+		}
 
 		runtimeMode = newMode;
 		clearModeRequests();
@@ -266,9 +343,15 @@ namespace
 			prepareWorldEditorForEnter();
 			worldEditor.enter(renderer);
 		}
+		else if (runtimeMode == entityEditorMode)
+		{
+			prepareEntityEditorForEnter();
+			entityEditor.enter(renderer);
+		}
 		else if (runtimeMode == gameplayMode)
 		{
 			gameplay.refreshWorldData();
+			gameplay.reloadEntityData();
 		}
 	}
 
@@ -284,7 +367,8 @@ namespace
 
 #if REMOVE_IMGUI == 0
 		if ((runtimeMode == levelEditorMode && levelEditor.levelDirty) ||
-			(runtimeMode == worldEditorMode && worldEditor.worldDirty))
+			(runtimeMode == worldEditorMode && worldEditor.worldDirty) ||
+			(runtimeMode == entityEditorMode && entityEditor.entityDirty))
 		{
 			pendingModeSwitchTarget = newMode;
 			ImGui::OpenPopup("Unsaved Changes Before Switching");
@@ -292,7 +376,8 @@ namespace
 		}
 #else
 		if ((runtimeMode == levelEditorMode && levelEditor.levelDirty) ||
-			(runtimeMode == worldEditorMode && worldEditor.worldDirty))
+			(runtimeMode == worldEditorMode && worldEditor.worldDirty) ||
+			(runtimeMode == entityEditorMode && entityEditor.entityDirty))
 		{
 			return;
 		}
@@ -339,6 +424,11 @@ namespace
 				ImGui::TextUnformatted("The current world has unsaved changes.");
 				ImGui::TextUnformatted("Save, discard, or cancel before changing modes.");
 			}
+			else if (runtimeMode == entityEditorMode)
+			{
+				ImGui::TextUnformatted("The current entity data has unsaved changes.");
+				ImGui::TextUnformatted("Save, discard, or cancel before changing modes.");
+			}
 
 			if (runtimeMode == levelEditorMode && levelEditor.fileActionHasError && !levelEditor.fileActionMessage.empty())
 			{
@@ -347,6 +437,10 @@ namespace
 			else if (runtimeMode == worldEditorMode && worldEditor.worldHasError && !worldEditor.worldMessage.empty())
 			{
 				ImGui::TextColored({1.f, 0.45f, 0.35f, 1.f}, "%s", worldEditor.worldMessage.c_str());
+			}
+			else if (runtimeMode == entityEditorMode && entityEditor.entityHasError && !entityEditor.entityMessage.empty())
+			{
+				ImGui::TextColored({1.f, 0.45f, 0.35f, 1.f}, "%s", entityEditor.entityMessage.c_str());
 			}
 
 			if (ImGui::Button("Save", {120.f, 0.f}))
@@ -361,6 +455,11 @@ namespace
 				{
 					worldEditor.saveWorld();
 					canSwitch = !worldEditor.worldDirty && !worldEditor.worldHasError;
+				}
+				else if (runtimeMode == entityEditorMode)
+				{
+					entityEditor.saveCurrentData();
+					canSwitch = !entityEditor.entityDirty && !entityEditor.entityHasError;
 				}
 
 				if (canSwitch)
@@ -384,6 +483,10 @@ namespace
 					levelEditor.tuning.cameraZoom = preservedZoom;
 					levelEditor.cameraInitialized = preservedCameraInitialized;
 					levelEditor.tool = preservedTool;
+				}
+				else if (runtimeMode == entityEditorMode)
+				{
+					entityEditor.discardChanges();
 				}
 
 				queuedModeSwitchTarget = pendingModeSwitchTarget;
@@ -458,10 +561,13 @@ bool initGame(SDL_Renderer *sdlRenderer)
 	gameplay.init();
 	levelEditor = {};
 	worldEditor = {};
+	entityEditor = {};
 	levelEditorLoaded = false;
 	worldEditorLoaded = false;
+	entityEditorLoaded = false;
 	levelEditorResumeState = {};
 	worldEditorResumeState = {};
+	entityEditorResumeState = {};
 	pendingModeSwitchTarget = -1;
 	queuedModeSwitchTarget = -1;
 
@@ -531,6 +637,10 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 	{
 		requestModeSwitch(worldEditorMode);
 	}
+	else if (!blockingModeSwitchPopup && input.isButtonPressed(platform::Button::F9))
+	{
+		requestModeSwitch(entityEditorMode);
+	}
 	else if (!blockingModeSwitchPopup && input.isButtonPressed(platform::Button::Grave))
 	{
 		if (runtimeMode == gameplayMode)
@@ -571,6 +681,10 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		{
 			requestModeSwitch(worldEditorMode);
 		}
+		else if (levelEditor.requestEntityEditorMode)
+		{
+			requestModeSwitch(entityEditorMode);
+		}
 	}
 	else if (runtimeMode == worldEditorMode)
 	{
@@ -590,9 +704,31 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 			syncLevelSelectionFromWorldEditor();
 			requestModeSwitch(levelEditorMode);
 		}
+		else if (worldEditor.requestEntityEditorMode)
+		{
+			syncLevelSelectionFromWorldEditor();
+			requestModeSwitch(entityEditorMode);
+		}
 		else
 		{
 			syncLevelSelectionFromWorldEditor();
+		}
+	}
+	else if (runtimeMode == entityEditorMode)
+	{
+		entityEditor.update(deltaTime, renderInput, renderer,
+			gameRenderWindow.contentHovered, gameRenderWindow.contentFocused);
+		if (entityEditor.requestGameplayMode)
+		{
+			requestModeSwitch(gameplayMode);
+		}
+		else if (entityEditor.requestLevelEditorMode)
+		{
+			requestModeSwitch(levelEditorMode);
+		}
+		else if (entityEditor.requestWorldEditorMode)
+		{
+			requestModeSwitch(worldEditorMode);
 		}
 	}
 	else
@@ -605,6 +741,10 @@ bool gameLogic(float deltaTime, platform::Input &input, SDL_Renderer *sdlRendere
 		else if (gameplay.requestWorldEditorMode)
 		{
 			requestModeSwitch(worldEditorMode);
+		}
+		else if (gameplay.requestEntityEditorMode)
+		{
+			requestModeSwitch(entityEditorMode);
 		}
 	}
 
@@ -648,7 +788,8 @@ bool hasUnsavedEditorChangesForClose()
 {
 	return
 		(runtimeMode == levelEditorMode && levelEditorLoaded && levelEditor.levelDirty) ||
-		(runtimeMode == worldEditorMode && worldEditorLoaded && worldEditor.worldDirty);
+		(runtimeMode == worldEditorMode && worldEditorLoaded && worldEditor.worldDirty) ||
+		(runtimeMode == entityEditorMode && entityEditorLoaded && entityEditor.entityDirty);
 }
 
 std::string getUnsavedEditorChangesDescriptionForClose()
@@ -666,6 +807,11 @@ std::string getUnsavedEditorChangesDescriptionForClose()
 	if (runtimeMode == worldEditorMode && worldEditorLoaded && worldEditor.worldDirty)
 	{
 		return "the current world";
+	}
+
+	if (runtimeMode == entityEditorMode && entityEditorLoaded && entityEditor.entityDirty)
+	{
+		return "the current entity shapes";
 	}
 
 	return {};
@@ -709,6 +855,24 @@ bool saveUnsavedEditorChangesForClose(std::string *errorMessage)
 		return true;
 	}
 
+	if (runtimeMode == entityEditorMode && entityEditorLoaded && entityEditor.entityDirty)
+	{
+		entityEditor.saveCurrentData();
+		if (entityEditor.entityDirty || entityEditor.entityHasError)
+		{
+			if (errorMessage)
+			{
+				*errorMessage = entityEditor.entityMessage.empty()
+					? "Couldn't save the current entity shapes."
+					: entityEditor.entityMessage;
+			}
+
+			return false;
+		}
+
+		return true;
+	}
+
 	return true;
 }
 
@@ -723,6 +887,10 @@ void closeGame()
 	if (worldEditorLoaded)
 	{
 		worldEditor.cleanup();
+	}
+	if (entityEditorLoaded)
+	{
+		entityEditor.cleanup();
 	}
 	gameRenderWindow.cleanup();
 }
